@@ -38,8 +38,8 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
         try:
             from langchain_ollama import ChatOllama
             return ChatOllama(
-                model=self.model, 
-                temperature=self.temperature,
+                model=model, 
+                temperature=temperature,
                 num_predict=LOCAL_MAX_TOKENS,
                 num_ctx=LOCAL_CONTEXT,
                 num_thread=LOCAL_THREADS,
