@@ -10,6 +10,9 @@ import os
 import argparse
 from vosk import Model, KaldiRecognizer
 
+# Отключаем логи Vosk (Kaldi)
+os.environ['VOSK_LOG_LEVEL'] = '0'
+
 # Конфигурация
 HOST = "0.0.0.0"
 STT_WS_PORT = 8778

@@ -29,6 +29,7 @@ def audio_callback(indata, frames, time, status):
     if is_recording and clients:  # Отправляем аудио только если есть подключенные клиенты
         audio_data = indata.copy()
         audio_buffer.append(audio_data)
+        print(f"[DEBUG] Размер буфера аудио: {len(audio_buffer)}")
         if len(audio_buffer) > 10:  # Ограничиваем размер буфера
             asyncio.run_coroutine_threadsafe(broadcast_audio(audio_buffer.pop(0)), asyncio.get_event_loop())
 
@@ -74,8 +75,8 @@ async def start_microphone(device=None, loop=None):
         if is_recording and clients:
             audio_data = indata.copy()
             audio_buffer.append(audio_data)
+            print(f"[DEBUG] Размер буфера аудио: {len(audio_buffer)}")
             if len(audio_buffer) > 10:
-                # Безопасно вызываем корутину из потока
                 loop.call_soon_threadsafe(
                     lambda: asyncio.create_task(broadcast_audio(audio_buffer.pop(0)))
                 )
