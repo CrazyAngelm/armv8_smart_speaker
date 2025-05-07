@@ -126,6 +126,7 @@ async def stt_handler(websocket, path):
         print(f"[ОШИБКА] Ошибка WebSocket: {e}")
 
 async def main():
+    global VOSK_MODEL_PATH, MIC_WS_URI
     # Разбор аргументов командной строки
     parser = argparse.ArgumentParser(description="Сервис распознавания речи для ARMv8")
     parser.add_argument("--model", type=str, default=VOSK_MODEL_PATH, help="Путь к модели Vosk")
@@ -134,7 +135,6 @@ async def main():
     args = parser.parse_args()
     
     # Обновляем глобальные настройки
-    global VOSK_MODEL_PATH, MIC_WS_URI
     VOSK_MODEL_PATH = args.model
     MIC_WS_URI = args.mic_uri
     
