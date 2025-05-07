@@ -66,8 +66,19 @@ async def broadcast_audio(audio_data):
         clients.remove(client)
 
 # Настройка и запуск микрофона
-async def start_microphone(device=None):
+async def start_microphone(device=None, loop=None):
     """Запуск захвата аудио с микрофона"""
+    def audio_callback(indata, frames, time, status):
+        if status:
+            print(f"[ПРЕДУПРЕЖДЕНИЕ] {status}")
+        if is_recording and clients:
+            audio_data = indata.copy()
+            audio_buffer.append(audio_data)
+            if len(audio_buffer) > 10:
+                # Безопасно вызываем корутину из потока
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(broadcast_audio(audio_buffer.pop(0)))
+                )
     try:
         stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -78,7 +89,7 @@ async def start_microphone(device=None):
             device=device
         )
         with stream:
-            print(f"[ИНФО] Микрофон запущен на устройстве {device if device else 'по умолчанию'}")
+            print(f"[ИНФО] Микрофон запущен на устройстве {device if device is not None else 'по умолчанию'}")
             print(f"[ИНФО] Частота дискретизации: {SAMPLE_RATE} Гц, каналов: {CHANNELS}")
             while True:
                 await asyncio.sleep(1)
@@ -113,7 +124,8 @@ async def main():
     print(f"[ИНФО] WebSocket сервер запущен на ws://{HOST}:{args.port}")
     
     # Запуск микрофона
-    mic_task = asyncio.create_task(start_microphone(args.device))
+    loop = asyncio.get_running_loop()
+    mic_task = asyncio.create_task(start_microphone(args.device, loop=loop))
     
     # Продолжать выполнение
     try:
