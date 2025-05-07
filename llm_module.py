@@ -15,6 +15,12 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307")
 LOCAL_MODEL = os.getenv("LOCAL_MODEL", "gemma3:12b")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
 
+LOCAL_MAX_TOKENS = int(os.getenv("LOCAL_MAX_TOKENS", "128"))    # num_predict
+LOCAL_CONTEXT    = int(os.getenv("LOCAL_CONTEXT",    "512"))   # num_ctx
+LOCAL_THREADS    = int(os.getenv("LOCAL_THREADS",    "0"))      # num_thread (0 = autodetect)
+LOCAL_TOP_P      = float(os.getenv("LOCAL_TOP_P",   "0.9"))    # top_p
+LOCAL_TOP_K      = int(os.getenv("LOCAL_TOP_K",       "40"))   # top_k
+
 # --- PROVIDER INITIALIZATION ---
 def _init_llm(provider: str, temperature: float) -> BaseChatModel:
     provider = provider.lower()
@@ -31,7 +37,15 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
     elif provider == "local":
         try:
             from langchain_ollama import ChatOllama
-            return ChatOllama(model=model, temperature=temperature)
+            return ChatOllama(
+                model=self.model, 
+                temperature=self.temperature,
+                num_predict=LOCAL_MAX_TOKENS,
+                num_ctx=LOCAL_CONTEXT,
+                num_thread=LOCAL_THREADS,
+                top_p=LOCAL_TOP_P,
+                top_k=LOCAL_TOP_K,
+            )
         except ImportError:
             raise ImportError("[ERROR] langchain-ollama not installed. Run: pip install langchain-ollama")
     else:
