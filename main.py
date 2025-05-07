@@ -17,15 +17,20 @@ if not Path('.env').exists():
     sys.exit(1)
 
 # Проверка наличия venv
-venv_python = Path('venv') / 'Scripts' / 'python.exe'
+venv_path = Path('venv')
+if os.name == 'nt':  # Windows
+    venv_python = venv_path / 'Scripts' / 'python.exe'
+else:  # Linux/Unix
+    venv_python = venv_path / 'bin' / 'python'
+
 if not venv_python.exists():
     print("[ERROR] Виртуальное окружение не найдено. Создайте его командой: python -m venv venv")
     sys.exit(1)
 
 # --- Предустановка зависимостей ---
 REQUIRED_PACKAGES = [
-    'langgraph', 'langchain', 'aiohttp', 'websockets', 'python-dotenv',
-    'torch', 'transformers', 'sounddevice', 'webrtcvad', 'soundfile'
+    'websockets', 'python-dotenv', 'vosk', 'sounddevice', 'webrtcvad', 'soundfile',
+    'numpy', 'aiohttp', 'langgraph', 'langchain'
 ]
 def install_deps():
     try:
@@ -45,7 +50,7 @@ install_deps()
 # --- Конец блока предустановки ---
 
 # Получаем порты из .env или используем значения по умолчанию
-whisper_ws_port = int(os.getenv("WHISPER_WS_PORT", 8779))
+stt_ws_port = int(os.getenv("STT_WS_PORT", 8778))
 tts_ws_port = int(os.getenv("TTS_WS_PORT", 8777))
 agent_ws_port = int(os.getenv("MAGUS_WS_PORT", 8765))
 
@@ -64,7 +69,7 @@ async def wait_for_ws(port, timeout=30):
     return False
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Sanya 2.0 Tabletop RPG Assistant")
+    parser = argparse.ArgumentParser(description="Smart Speaker")
     parser.add_argument('--cli', '-c', action='store_true', help='Тестовый CLI-режим (только текстовые команды)')
     return parser.parse_args()
 
@@ -79,16 +84,16 @@ async def main():
 
     processes = []
     env = os.environ.copy()
-    # Запуск Whisper STT сервера
-    print("[START] Запуск Whisper STT сервера...")
-    stt_proc = subprocess.Popen([str(venv_python), 'whisper_stt.py', 'ws'], env=env)
+    # Запуск STT сервера
+    print("[START] Запуск Vosk STT сервера...")
+    stt_proc = subprocess.Popen([str(venv_python), 'vosk_stt.py', 'ws'], env=env)
     processes.append(stt_proc)
-    await wait_for_ws(whisper_ws_port)
+    await wait_for_ws(stt_ws_port)
     await asyncio.sleep(1)
 
-    # Запуск Yandex TTS сервера
-    print("[START] Запуск Yandex TTS сервера...")
-    tts_proc = subprocess.Popen([str(venv_python), 'yandex_tts.py', 'ws'], env=env)
+    # Запуск TTS сервера
+    print("[START] Запуск piper TTS сервера...")
+    tts_proc = subprocess.Popen([str(venv_python), 'piper_tts.py', 'ws'], env=env)
     processes.append(tts_proc)
     await wait_for_ws(tts_ws_port)
     await asyncio.sleep(1)

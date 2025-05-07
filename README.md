@@ -1,199 +1,129 @@
-# ARMv8 Smart Speaker
+# Industrial Smart Speaker Assistant for ARMv8
 
-Система распознавания голоса для ARMv8-устройств (Orange Pi 5 Pro, Raspberry Pi и др.) на базе Debian с использованием Vosk STT.
+This project is a voice assistant for industrial environments, using Vosk for speech recognition, Yandex TTS for voice synthesis, and LLM (Language Model) for response generation.
 
-## Возможности
+## Requirements
 
-- Запись звука с микрофона через WebSocket
-- Детектирование голосовой активности (VAD) для лучшего распознавания
-- Распознавание речи с помощью модели Vosk
-- Передача аудио и текста через WebSockets
-- Автоматическое управление виртуальным окружением
-- Оптимизирован для работы на ARMv8 архитектуре
+- Python 3.8+
+- ARMv8 architecture (Orange Pi 5 Pro) running Debian
+- Microphone for audio input
 
-## Компоненты
+## Installation
 
-Система состоит из трех основных компонентов:
+1. Create a virtual environment:
 
-1. **mic.py** - Микрофонный сервис, записывает аудио и транслирует его через WebSocket
-2. **stt.py** - Сервис распознавания речи, получает аудио от mic.py и преобразует его в текст
-3. **main.py** - Основной контроллер, запускает и координирует все сервисы
-
-Также имеется удобный скрипт запуска:
-- **run.py** - Проверяет окружение, зависимости и запускает систему
-
-## Установка
-
-### Требования
-- Python 3.7+
-- Debian/Ubuntu на устройстве ARMv8 (aarch64)
-- ALSA для работы с аудио
-- Модель Vosk для русской речи
-
-### Установка зависимостей системы
 ```bash
-sudo apt update
-sudo apt install -y python3-venv python3-dev portaudio19-dev libatlas-base-dev
+python -m venv venv
 ```
 
-### Настройка Python окружения
-Автоматически через run.py:
-```bash
-python3 run.py
-```
-Ручная настройка:
-```bash
-# Создание виртуального окружения
-python3 -m venv venv
-source venv/bin/activate  # Linux
-venv\Scripts\activate     # Windows
+2. Activate the virtual environment:
 
-# Установка зависимостей
-pip install --upgrade pip
+```bash
+# On Linux/macOS
+source venv/bin/activate
+
+# On Windows
+venv\Scripts\activate
+```
+
+3. Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
-### Загрузка модели Vosk
-Если модель еще не загружена:
+4. Create a `.env` file based on the template below:
+
+```
+# STT (Speech-to-Text) Settings
+STT_WS_HOST=0.0.0.0
+STT_WS_PORT=8778
+VOSK_MODEL_PATH=models/vosk-model-small-ru-0.22
+
+# TTS (Text-to-Speech) Settings
+TTS_WS_HOST=0.0.0.0
+TTS_WS_PORT=8777
+YANDEX_FOLDER_ID=your_folder_id_here
+YANDEX_IAM_TOKEN=your_iam_token_here
+YANDEX_TTS_VOICE=alena
+
+# Agent Settings
+MAGUS_WS_HOST=0.0.0.0
+MAGUS_WS_PORT=8765
+
+# LLM Settings
+LLM_PROVIDER=deepseek
+LLM_MODEL=
+DEEPSEEK_MODEL=deepseek-chat
+CLAUDE_MODEL=claude-3-haiku-20240307
+LOCAL_MODEL=gemma3:12b
+LLM_TEMPERATURE=0.3
+```
+
+5. Download the Vosk model:
 
 ```bash
 mkdir -p models
 cd models
+# Download a Russian model for Vosk
 wget https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
 unzip vosk-model-small-ru-0.22.zip
 cd ..
 ```
 
-## Использование
+## Usage
 
-### Запуск через скрипт run.py (рекомендуется)
+### Running in Full Mode
+
+To start the system with voice recognition and synthesis:
+
 ```bash
-# Базовый запуск
-python run.py
-
-# Запуск с аргументами
-python run.py --device 1 --debug
-```
-
-### Запуск через основной контроллер
-```bash
-# Активация venv
-source venv/bin/activate  # Linux
-venv\Scripts\activate     # Windows
-
-# Базовый запуск
 python main.py
-
-# Для просмотра доступных аудио устройств
-python main.py --list-devices
-
-# Запуск с указанием устройства и портов
-python main.py --device 1 --mic-port 8765 --stt-port 8778
 ```
 
-### Запуск компонентов по отдельности
-Если нужно запустить сервисы независимо:
+This will start:
+- Vosk STT (Speech-to-Text) service
+- Yandex TTS (Text-to-Speech) service
+- Agent service
+- Microphone client
+
+### CLI Mode
+
+For testing without voice (text-only mode):
 
 ```bash
-# Активация venv
-source venv/bin/activate  # Linux
-venv\Scripts\activate     # Windows
-
-# Микрофонный сервис
-python mic.py --device 0 --port 8765 --vad-mode 3
-
-# Сервис STT
-python stt.py --model models/vosk-model-small-ru-0.22 --mic-uri ws://localhost:8765
+python main.py --cli
 ```
 
-## Настройка для Orange Pi 5 Pro
+### Microphone Options
 
-### Настройка ALSA
+To list available audio devices:
+
 ```bash
-# Установка ALSA утилит
-sudo apt install alsa-utils
-
-# Настройка аудиоустройств
-alsamixer
-
-# Проверка микрофонов
-arecord -l
+python mic_client.py --list-devices
 ```
 
-### Разрешения для аудио
+To use a specific audio device:
+
 ```bash
-# Добавьте пользователя в audio группу
-sudo usermod -a -G audio $USER
-# Перезагрузка или выход/вход в систему для применения изменений
+python mic_client.py --device <device_index>
 ```
 
-## Особенности и улучшения
+To listen to system audio instead of microphone:
 
-### Voice Activity Detection (VAD)
-Система использует WebRTC VAD для определения голосовой активности. Это позволяет:
-- Экономить ресурсы процессора, обрабатывая только речь
-- Повысить точность распознавания за счет фильтрации шумов
-- Снизить нагрузку на сеть, передавая только значимые аудиоданные
-
-Настройки VAD можно менять через параметр `--vad-mode`:
 ```bash
-# VAD с более высокой чувствительностью (меньше пропусков, больше ложных срабатываний)
-python mic.py --vad-mode 1
-
-# VAD с более высокой агрессивностью (меньше ложных срабатываний, риск пропуска речи)
-python mic.py --vad-mode 3
+python mic_client.py --loopback
 ```
 
-### Переподключение и надежность
-Система включает:
-- Автоматическое переподключение при обрыве связи с экспоненциальной задержкой
-- Мониторинг и автоматический перезапуск сервисов
-- Обработку ошибок и плавное восстановление
+## Architecture
 
-### Конфигурация через .env
-Можно настроить систему через файл .env:
-```
-# .env пример
-MIC_WS_PORT=8765
-STT_WS_PORT=8778
-VOSK_MODEL_PATH=models/vosk-model-small-ru-0.22
-VAD_MODE=3
-DEBUG=false
-```
+The system consists of several components that communicate via WebSockets:
 
-## Решение проблем
+1. **STT Service (vosk_stt.py)**: Converts audio to text using Vosk
+2. **TTS Service (yandex_tts.py)**: Converts text to audio using Yandex TTS API
+3. **Agent (agent.py)**: Main component that processes text input, generates responses using LLM
+4. **Microphone Client (mic_client.py)**: Captures audio from microphone and sends it to the agent
 
-### Не удается найти микрофон
-```bash
-# Проверьте доступные устройства
-python run.py --list-devices
+## License
 
-# Или напрямую через ALSA
-arecord -l
-```
-
-### Проблемы с распознаванием речи
-```bash
-# Проверьте наличие модели Vosk
-ls -la models/vosk-model-small-ru-0.22
-
-# Запустите с отладкой
-python run.py --debug
-```
-
-### Ручной перезапуск сервисов
-Если сервисы зависли или работают некорректно:
-```bash
-# Ctrl+C для остановки
-# Затем запустите снова
-python run.py
-```
-
-## Развитие проекта
-
-Будущие улучшения могут включать:
-- Интеграцию с более продвинутыми системами распознавания речи
-- Добавление системы синтеза речи для ответов
-- Управление умным домом через голосовые команды
-- Многоязычную поддержку
-
+This project is for educational and industrial purposes. 
