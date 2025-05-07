@@ -28,25 +28,20 @@ if not venv_python.exists():
     sys.exit(1)
 
 # --- Предустановка зависимостей ---
-REQUIRED_PACKAGES = [
-    'websockets', 'python-dotenv', 'vosk', 'sounddevice', 'webrtcvad', 'soundfile',
-    'numpy', 'aiohttp', 'langgraph', 'langchain'
-]
-def install_deps():
-    try:
-        import pkg_resources
-        installed = {pkg.key for pkg in pkg_resources.working_set}
-        missing = [pkg for pkg in REQUIRED_PACKAGES if pkg.lower() not in installed]
-        if missing:
-            print(f"[INFO] Устанавливаю зависимости: {' '.join(missing)}")
-            subprocess.check_call([str(venv_python), '-m', 'pip', 'install', *missing])
-        else:
-            print("[INFO] Все зависимости уже установлены.")
-    except Exception as e:
-        print(f"[ERROR] Не удалось установить зависимости: {e}")
-        sys.exit(1)
+# REQUIRED_PACKAGES = [
+#     'websockets', 'python-dotenv', 'vosk', 'sounddevice', 'webrtcvad', 'soundfile',
+#     'numpy', 'aiohttp', 'langgraph', 'langchain'
+# ]
+# def install_deps():
+#     try:
+#         print(f"[INFO] Устанавливаю зависимости: {' '.join(REQUIRED_PACKAGES)}")
+#         subprocess.check_call([str(venv_python), '-m', 'pip', 'install', *REQUIRED_PACKAGES])
+#         print("[INFO] Все зависимости установлены.")
+#     except Exception as e:
+#         print(f"[ERROR] Не удалось установить зависимости: {e}")
+#         sys.exit(1)
 
-install_deps()
+# install_deps()
 # --- Конец блока предустановки ---
 
 # Получаем порты из .env или используем значения по умолчанию
