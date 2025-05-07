@@ -92,7 +92,7 @@ async def main():
     await asyncio.sleep(1)
 
     # Запуск TTS сервера
-    print("[START] Запуск piper TTS сервера...")
+    print("[START] Запуск Piper TTS сервера...")
     tts_proc = subprocess.Popen([str(venv_python), 'piper_tts.py', 'ws'], env=env)
     processes.append(tts_proc)
     await wait_for_ws(tts_ws_port)

@@ -38,7 +38,7 @@ async def stt_vosk(audio: AudioMsg) -> str:
     t0 = time.perf_counter()
     print(f"[LOG] [STT] Отправка аудио ({len(audio.raw)} байт, sr={audio.sr}) в Vosk STT WS")
     try:
-        async with websockets.connect(f"ws://{STT_WS_HOST}:{STT_WS_PORT}", max_size=2**22) as ws:
+        async with websockets.connect(f"ws://{STT_WS_HOST}:{STT_WS_PORT}", max_size=8*2**20) as ws:
             await ws.send(audio.raw)
             resp = await ws.recv()
             if isinstance(resp, str) and not resp.startswith("ERROR"):
@@ -87,7 +87,7 @@ def extract_tts_text(text: str) -> str:
     return text
 
 # ---------- TTS клиент ----------
-async def tts_yandex(text: str) -> bytes:
+async def tts_client(text: str) -> bytes:
     t0 = time.perf_counter()
     try:
         text = extract_tts_text(text)
@@ -95,12 +95,12 @@ async def tts_yandex(text: str) -> bytes:
         print(f"[ERROR] [TTS] Ошибка при обработке текста: {e}")
     print(f"[LOG] [TTS] Отправка текста в TTS: {text}...")
     try:
-        async with websockets.connect(f"ws://{TTS_WS_HOST}:{TTS_WS_PORT}", max_size=2**20) as ws:
+        async with websockets.connect(f"ws://{TTS_WS_HOST}:{TTS_WS_PORT}", max_size=8*2**20) as ws:
             await ws.send(text)
             resp = await ws.recv()
             if isinstance(resp, bytes):
                 t1 = time.perf_counter()
-                print(f"[PROFILE] TTS (Yandex): {t1-t0:.2f} сек")
+                print(f"[PROFILE] TTS (Piper): {t1-t0:.2f} сек")
                 return resp
             raise RuntimeError(f"TTS WS error: {resp}")
     except Exception as e:
@@ -171,7 +171,7 @@ async def llm_node(state: AgentState) -> AgentState:
 async def tts_node(state: AgentState) -> AgentState:
     if state.text:
         try:
-            audio_bytes = await tts_yandex(state.text.text)
+            audio_bytes = await tts_client(state.text.text)
             state.audio = AudioMsg(audio_bytes, sr=48000)
         except Exception as e:
             print(f"[ERROR] TTS error: {e}")
@@ -201,6 +201,14 @@ app = workflow.compile()
 
 # ---------- WebSocket сервер ----------
 HOST, PORT = os.getenv("MAGUS_WS_HOST","0.0.0.0"), int(os.getenv("MAGUS_WS_PORT",8765))
+
+# Функция для разбиения больших аудио на части
+def split_audio_data(audio_data: bytes, max_chunk_size: int = 1024 * 1024) -> list:
+    """Разбивает большие аудио-данные на части не более max_chunk_size байт."""
+    chunks = []
+    for i in range(0, len(audio_data), max_chunk_size):
+        chunks.append(audio_data[i:i + max_chunk_size])
+    return chunks
 
 async def handle(ws):
     audio_chunks = []
@@ -274,14 +282,33 @@ async def handle(ws):
                                         
                                         if text_message:
                                             print(f"[LOG] [AGENT] Синтезируем речь из найденного текста: {text_message}")
-                                            audio_bytes = await tts_yandex(text_message)
+                                            audio_bytes = await tts_client(text_message)
                                             audio_result = AudioMsg(audio_bytes, sr=48000)
                                             break
                                             
-                            # Если аудио найдено, отправляем его
+                            # Если аудио найдено, отправляем его (с разбивкой на части, если нужно)
                             if audio_result:
-                                print(f"[LOG] [WS] Отправка аудио-ответа: {len(audio_result.raw)} байт")
-                                await ws.send(audio_result.raw)
+                                audio_size = len(audio_result.raw)
+                                print(f"[LOG] [WS] Отправка аудио-ответа: {audio_size} байт")
+                                
+                                # Проверяем, нужно ли разбивать аудио на части
+                                if audio_size > 1024 * 1024:  # Если больше 1 МБ
+                                    print(f"[LOG] [WS] Аудио слишком большое, разбиваем на части")
+                                    
+                                    # Отправляем клиенту команду, что начинаем передачу частей
+                                    await ws.send("AUDIO_CHUNKS_BEGIN")
+                                    
+                                    # Разбиваем и отправляем части
+                                    chunks = split_audio_data(audio_result.raw)
+                                    for i, chunk in enumerate(chunks):
+                                        print(f"[LOG] [WS] Отправка части {i+1}/{len(chunks)}, размер: {len(chunk)} байт")
+                                        await ws.send(chunk)
+                                    
+                                    # Отправляем сигнал завершения передачи
+                                    await ws.send("AUDIO_CHUNKS_END")
+                                else:
+                                    # Отправляем целиком, если маленькое
+                                    await ws.send(audio_result.raw)
                             else:
                                 print("[LOG] [WS] Аудио-ответ не найден!")
                                 await ws.send("ERROR: No audio result found")
@@ -302,7 +329,7 @@ async def handle(ws):
 async def main_ws():
     print(f"[WS] Serving on ws://{HOST}:{PORT}")
     async with websockets.serve(
-        handle, HOST, PORT, max_size=2**20,
+        handle, HOST, PORT, max_size=8*2**20,
         ping_interval=30,  # seconds between pings
         ping_timeout=30    # seconds to wait for pong
     ):

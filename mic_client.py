@@ -35,28 +35,39 @@ def print_available_devices():
 
 def play_audio(audio_data):
     import tempfile
-    temp_ogg = tempfile.NamedTemporaryFile(suffix='.ogg', delete=False)
+    
+    # Определяем тип файла по заголовку WAV
+    is_wav = audio_data[:4] == b'RIFF' and audio_data[8:12] == b'WAVE'
+    suffix = '.wav' if is_wav else '.ogg'
+    
+    temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     try:
-        temp_ogg.write(audio_data)
-        temp_ogg.close()
-        data, samplerate = sf.read(temp_ogg.name, dtype='float32')
-        sd.play(data, samplerate)
-        sd.wait()
+        temp_file.write(audio_data)
+        temp_file.close()
+        
+        try:
+            data, samplerate = sf.read(temp_file.name, dtype='float32')
+            print(f"[INFO] Воспроизведение аудио: {len(data)} сэмплов, {samplerate} Гц")
+            sd.play(data, samplerate)
+            sd.wait()
+        except Exception as e:
+            print(f"[ERROR] Ошибка воспроизведения аудио: {e}")
+            
     except Exception as e:
         print(f"[ERROR] Не удалось воспроизвести ответ: {e}")
     finally:
         try:
-            if os.path.exists(temp_ogg.name):
-                os.remove(temp_ogg.name)
-        except Exception:
-            pass
+            if os.path.exists(temp_file.name):
+                os.remove(temp_file.name)
+        except Exception as e:
+            print(f"[WARNING] Не удалось удалить временный файл: {e}")
 
 # --- VAD + MIC ---
 async def vad_record_and_send(device=None):
     while True:
         try:
             print(f"[INFO] Connecting to {URI} (микрофон)")
-            async with websockets.connect(URI, max_size=2**20, ping_interval=30, ping_timeout=30) as ws:
+            async with websockets.connect(URI, max_size=8*2**20, ping_interval=30, ping_timeout=30) as ws:
                 await mic_stream_loop(ws, device)
         except Exception as e:
             print(f"[ERROR] Ошибка соединения: {e} (микрофон)")
@@ -127,8 +138,35 @@ async def process_and_send(ws, combined_data):
     try:
         await ws.send(combined_data)
         await ws.send("END")
+        
+        # Обработка ответа, который может быть разбит на части
         response = await ws.recv()
-        if isinstance(response, bytes):
+        
+        # Проверяем, начинается ли передача фрагментированного аудио
+        if response == "AUDIO_CHUNKS_BEGIN":
+            print("[INFO] Получаем фрагментированное аудио...")
+            audio_chunks = []
+            
+            # Собираем все фрагменты аудио
+            while True:
+                chunk = await ws.recv()
+                if isinstance(chunk, str) and chunk == "AUDIO_CHUNKS_END":
+                    break
+                if isinstance(chunk, bytes):
+                    audio_chunks.append(chunk)
+                    print(f"[INFO] Получен фрагмент аудио: {len(chunk)} байт")
+            
+            # Объединяем все фрагменты в одно аудио
+            if audio_chunks:
+                combined_audio = b"".join(audio_chunks)
+                print(f"[INFO] Собрано аудио из {len(audio_chunks)} фрагментов, общий размер: {len(combined_audio)} байт")
+                threading.Thread(target=play_audio, args=(combined_audio,)).start()
+            else:
+                print("[WARNING] Получены пустые фрагменты аудио")
+        
+        # Обычный ответ (не разбитый на части)
+        elif isinstance(response, bytes):
+            print(f"[INFO] Получен аудио-ответ: {len(response)} байт")
             threading.Thread(target=play_audio, args=(response,)).start()
         else:
             print(f"[INFO] Получен текстовый ответ: {response}")
