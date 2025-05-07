@@ -33,7 +33,7 @@ def audio_callback(indata, frames, time, status):
             asyncio.run_coroutine_threadsafe(broadcast_audio(audio_buffer.pop(0)), asyncio.get_event_loop())
 
 # WebSocket функции
-async def ws_handler(websocket, path):
+async def ws_handler(websocket):
     """Обработчик WebSocket подключений"""
     clients.add(websocket)
     client_ip = websocket.remote_address[0]
