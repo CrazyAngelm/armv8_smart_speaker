@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Speech-to-Text server for ARMv8 (Debian).
-Receives audio from mic.py and converts it to text using Vosk.
-Designed for Orange Pi 5 Pro and similar ARMv8 boards.
+Сервис распознавания речи для ARMv8 (Debian).
+Получает аудио через WebSocket и преобразует в текст с помощью Vosk.
 """
 import asyncio
 import websockets
@@ -10,258 +9,157 @@ import json
 import os
 import argparse
 from vosk import Model, KaldiRecognizer
-from aiohttp import web
 
-# Configuration
-HOST = "0.0.0.0"  # Listen on all interfaces
-WEB_PORT = 8081  # Web interface port
-STT_WS_PORT = 8778  # STT WebSocket server port
-MIC_WS_URI = "ws://localhost:8765"  # WebSocket URI to connect to mic.py
+# Конфигурация
+HOST = "0.0.0.0"
+STT_WS_PORT = 8778
+MIC_WS_URI = "ws://localhost:8765"
 
-# Vosk model path
+# Путь к модели Vosk
 VOSK_MODEL_PATH = os.path.join("models", "vosk-model-small-ru-0.22")
 
-# Global state
-clients = set()
+# Глобальное состояние
 text_buffer = []
 is_processing = False
-mic_conn = None
 
-# Web server routes for status page
-async def index_handler(request):
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>ARMv8 Speech-to-Text</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-            .result { border: 1px solid #ddd; padding: 10px; margin: 10px 0; border-radius: 4px; }
-            .card { box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2); transition: 0.3s; border-radius: 5px; 
-                    padding: 20px; margin-bottom: 20px; background-color: #f9f9f9; }
-            h1, h2 { color: #333; }
-        </style>
-    </head>
-    <body>
-        <h1>Speech-to-Text Server</h1>
-        <div class="card">
-            <h2>Status</h2>
-            <p>Vosk model: <strong id="model-path">%s</strong></p>
-            <p>Connection to mic.py: <strong id="mic-status">%s</strong></p>
-        </div>
-        <div class="card">
-            <h2>Last Recognized Text</h2>
-            <div class="result" id="result">
-                <p>Waiting for speech...</p>
-            </div>
-        </div>
-        
-        <script>
-            // WebSocket for real-time updates
-            const socket = new WebSocket('ws://' + window.location.hostname + ':%d/ws');
-            
-            socket.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.text) {
-                        document.getElementById('result').innerHTML = '<p>' + data.text + '</p>';
-                    }
-                    if (data.mic_status) {
-                        document.getElementById('mic-status').innerText = data.mic_status;
-                    }
-                } catch (e) {
-                    console.error('Error parsing message:', e);
-                }
-            };
-            
-            socket.onclose = function() {
-                document.getElementById('mic-status').innerText = 'Disconnected';
-            };
-        </script>
-    </body>
-    </html>
-    """ % (VOSK_MODEL_PATH, "Connecting...", STT_WS_PORT)
-    return web.Response(text=html, content_type='text/html')
-
-# WebSocket handler for web clients
-async def ws_handler(websocket):
-    clients.add(websocket)
-    try:
-        await websocket.wait_closed()
-    finally:
-        clients.remove(websocket)
-
-# Send updates to web clients
-async def update_clients(text=None, mic_status=None):
-    if not clients:
-        return
-    
-    update = {}
-    if text is not None:
-        update["text"] = text
-    if mic_status is not None:
-        update["mic_status"] = mic_status
-    
-    if update:
-        message = json.dumps(update)
-        await asyncio.gather(
-            *[client.send_str(message) for client in clients]
-        )
-
-# Process audio with Vosk
+# Обработка аудио с помощью Vosk
 async def process_audio(audio_data):
+    """Обработка аудио данных и распознавание речи"""
     global is_processing, text_buffer
     
     if is_processing:
-        return
+        return None
     
     try:
         is_processing = True
         
-        # Check if model exists
+        # Проверяем наличие модели
         if not os.path.exists(VOSK_MODEL_PATH):
-            print(f"[ERROR] Vosk model not found at: {VOSK_MODEL_PATH}")
-            await update_clients(text="Error: Vosk model not found", mic_status="Error")
-            return
+            print(f"[ОШИБКА] Модель Vosk не найдена: {VOSK_MODEL_PATH}")
+            return None
         
-        # Load model and create recognizer
+        # Загружаем модель и создаем распознаватель
         model = Model(VOSK_MODEL_PATH)
         recognizer = KaldiRecognizer(model, 16000)
         
-        # Process audio
+        # Обрабатываем аудио
         recognizer.AcceptWaveform(audio_data)
         result = recognizer.FinalResult()
         
-        # Parse result
+        # Разбор результата
         result_json = json.loads(result)
         recognized_text = result_json.get("text", "")
         
         if recognized_text:
-            print(f"[STT] Recognized: {recognized_text}")
+            print(f"[РАСПОЗНАНО] {recognized_text}")
             text_buffer.append(recognized_text)
-            # Keep only the last 5 texts
+            # Хранить только последние 5 текстов
             if len(text_buffer) > 5:
                 text_buffer.pop(0)
-            await update_clients(text=recognized_text)
+            return recognized_text
         
+        return None
     except Exception as e:
-        print(f"[ERROR] STT processing error: {e}")
-        await update_clients(text=f"Error processing audio: {e}")
+        print(f"[ОШИБКА] Ошибка распознавания: {e}")
+        return None
     finally:
         is_processing = False
 
-# Connect to microphone WebSocket
+# Подключение к микрофонному WebSocket
 async def connect_to_mic():
-    global mic_conn
+    """Подключение к микрофонному сервису и обработка входящих аудио данных"""
+    reconnect_delay = 5  # секунд между попытками переподключения
     
     while True:
         try:
-            print(f"[INFO] Connecting to mic.py at {MIC_WS_URI}")
+            print(f"[ИНФО] Подключение к микрофонному сервису: {MIC_WS_URI}")
             async with websockets.connect(MIC_WS_URI, max_size=2**22) as websocket:
-                await update_clients(mic_status="Connected")
-                mic_conn = websocket
-                
-                print("[INFO] Connected to mic.py")
-                audio_buffer = b""
+                print("[ИНФО] Подключено к микрофонному сервису")
                 
                 async for message in websocket:
                     if isinstance(message, bytes):
-                        # Process audio data
+                        # Обработка аудио данных
                         await process_audio(message)
                     else:
-                        print(f"[INFO] Received text: {message}")
+                        print(f"[ИНФО] Получено текстовое сообщение: {message}")
         
         except Exception as e:
-            print(f"[ERROR] Connection to mic.py failed: {e}")
-            await update_clients(mic_status="Disconnected")
-            mic_conn = None
-            await asyncio.sleep(5)  # Retry after 5 seconds
+            print(f"[ОШИБКА] Ошибка подключения к микрофону: {e}")
+            print(f"[ИНФО] Повторная попытка через {reconnect_delay} секунд...")
+            await asyncio.sleep(reconnect_delay)
 
-# External STT WebSocket server
+# Внешний STT WebSocket сервер
 async def stt_handler(websocket, path):
+    """Обработчик внешних WebSocket подключений для STT"""
+    client_ip = websocket.remote_address[0]
+    print(f"[ИНФО] STT клиент подключен: {client_ip}")
+    
     try:
-        # Send initial status
+        # Отправляем начальный статус
         status = {
             "status": "ready",
             "model": VOSK_MODEL_PATH
         }
         await websocket.send(json.dumps(status))
         
-        # Process incoming messages
+        # Обрабатываем входящие сообщения
         async for message in websocket:
             if isinstance(message, bytes):
-                # Process audio data
-                try:
-                    # Load model and create recognizer
-                    model = Model(VOSK_MODEL_PATH)
-                    recognizer = KaldiRecognizer(model, 16000)
-                    
-                    # Process audio
-                    recognizer.AcceptWaveform(message)
-                    result = recognizer.FinalResult()
-                    
-                    # Send back the result
-                    await websocket.send(result)
-                except Exception as e:
-                    await websocket.send(json.dumps({"error": str(e)}))
+                # Обработка аудио данных
+                recognized_text = await process_audio(message)
+                result = {"text": recognized_text} if recognized_text else {"text": ""}
+                await websocket.send(json.dumps(result))
             else:
-                # Handle command
+                # Обработка команд
                 try:
                     cmd = json.loads(message)
                     if cmd.get("command") == "get_last_texts":
                         await websocket.send(json.dumps({"texts": text_buffer}))
-                except:
-                    await websocket.send(json.dumps({"error": "Invalid command"}))
+                    else:
+                        await websocket.send(json.dumps({"error": "Неизвестная команда"}))
+                except json.JSONDecodeError:
+                    await websocket.send(json.dumps({"error": "Неверный формат JSON"}))
     
     except websockets.exceptions.ConnectionClosedError:
-        print("[INFO] STT client disconnected")
+        print(f"[ИНФО] STT клиент отключен: {client_ip}")
     except Exception as e:
-        print(f"[ERROR] STT WebSocket error: {e}")
+        print(f"[ОШИБКА] Ошибка WebSocket: {e}")
 
 async def main():
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Speech-to-Text server for ARMv8")
-    parser.add_argument("--model", type=str, default=VOSK_MODEL_PATH, help="Path to Vosk model")
-    parser.add_argument("--mic-uri", type=str, default=MIC_WS_URI, help="URI of mic.py WebSocket")
-    parser.add_argument("--web-port", type=int, default=WEB_PORT, help="Web interface port")
-    parser.add_argument("--stt-port", type=int, default=STT_WS_PORT, help="STT WebSocket port")
+    # Разбор аргументов командной строки
+    parser = argparse.ArgumentParser(description="Сервис распознавания речи для ARMv8")
+    parser.add_argument("--model", type=str, default=VOSK_MODEL_PATH, help="Путь к модели Vosk")
+    parser.add_argument("--mic-uri", type=str, default=MIC_WS_URI, help="URI WebSocket микрофонного сервиса")
+    parser.add_argument("--port", type=int, default=STT_WS_PORT, help="Порт STT WebSocket сервера")
     args = parser.parse_args()
     
-    # Update global settings
+    # Обновляем глобальные настройки
     global VOSK_MODEL_PATH, MIC_WS_URI
     VOSK_MODEL_PATH = args.model
     MIC_WS_URI = args.mic_uri
     
-    print(f"[INFO] Using Vosk model: {VOSK_MODEL_PATH}")
-    print(f"[INFO] Connecting to mic.py at: {MIC_WS_URI}")
+    print(f"[ИНФО] Используется модель Vosk: {VOSK_MODEL_PATH}")
+    print(f"[ИНФО] Микрофонный сервис: {MIC_WS_URI}")
     
-    # Setup web application
-    app = web.Application()
-    app.router.add_get('/', index_handler)
-    app.router.add_get('/ws', web.get(ws_handler))
+    # Проверка наличия модели
+    if not os.path.exists(VOSK_MODEL_PATH):
+        print(f"[ПРЕДУПРЕЖДЕНИЕ] Модель Vosk не найдена: {VOSK_MODEL_PATH}")
+        print("[ПРЕДУПРЕЖДЕНИЕ] Распознавание речи не будет работать!")
     
-    # Start web server
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, HOST, args.web_port)
-    await site.start()
-    print(f"[INFO] Web interface running at http://{HOST}:{args.web_port}")
+    # Запуск STT WebSocket сервера
+    stt_server = await websockets.serve(stt_handler, HOST, args.port, max_size=2**22)
+    print(f"[ИНФО] STT WebSocket сервер запущен на ws://{HOST}:{args.port}")
     
-    # Start STT WebSocket server
-    stt_server = await websockets.serve(stt_handler, HOST, args.stt_port, max_size=2**22)
-    print(f"[INFO] STT WebSocket server running at ws://{HOST}:{args.stt_port}")
-    
-    # Connect to mic.py
+    # Подключение к микрофонному сервису
     mic_task = asyncio.create_task(connect_to_mic())
     
-    # Keep everything running
+    # Продолжать выполнение
     try:
         await asyncio.gather(mic_task)
     finally:
-        await runner.cleanup()
         stt_server.close()
         await stt_server.wait_closed()
 
 if __name__ == "__main__":
+    print("[ИНФО] Запуск сервиса распознавания речи...")
     asyncio.run(main()) 

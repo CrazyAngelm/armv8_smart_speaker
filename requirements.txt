@@ -1,6 +1,4 @@
-aiohttp>=3.8.0
 websockets>=10.0
 numpy>=1.20.0
 sounddevice>=0.4.4
-vosk>=0.3.45
-python-dotenv>=0.21.0 
+vosk>=0.3.45 
