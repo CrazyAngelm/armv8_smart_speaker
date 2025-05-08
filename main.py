@@ -11,6 +11,8 @@ import argparse
 # Загружаем переменные окружения
 load_dotenv()
 
+WAKEWORD = os.environ.get('WAKEWORD', 'okey')
+
 # Проверка наличия .env
 if not Path('.env').exists():
     print("[ERROR] Файл .env не найден! Создайте .env с нужными переменными окружения.")
@@ -30,7 +32,7 @@ if not venv_python.exists():
 # --- Предустановка зависимостей ---
 REQUIRED_PACKAGES = [
     'websockets', 'python-dotenv', 'vosk', 'sounddevice', 'webrtcvad', 'soundfile',
-    'numpy', 'aiohttp', 'langgraph', 'langchain'
+    'numpy', 'aiohttp', 'langgraph', 'langchain', 'pocketsphinx'
 ]
 def install_deps():
     try:
@@ -71,10 +73,26 @@ async def wait_for_ws(port, timeout=30):
 def parse_args():
     parser = argparse.ArgumentParser(description="Smart Speaker")
     parser.add_argument('--cli', '-c', action='store_true', help='Тестовый CLI-режим (только текстовые команды)')
+    parser.add_argument('--no-wake', action='store_true', help='Отключить режим пробуждения по ключевому слову')
+    parser.add_argument('--wake-word', type=str, default=WAKEWORD, help=f'Установить ключевое слово для пробуждения (по умолчанию {WAKEWORD})')
+    parser.add_argument('--device', type=int, help='Индекс устройства ввода звука')
     return parser.parse_args()
 
 async def main():
     args = parse_args()
+    
+    # Set environment variables for wake word configuration
+    if args.wake_word:
+        os.environ["WAKEWORD"] = args.wake_word
+        print(f"[CONFIG] Установлено ключевое слово: '{args.wake_word}'")
+    
+    # Toggle wake word mode
+    os.environ["USE_WAKE_WORD"] = "false" if args.no_wake else "true"
+    if args.no_wake:
+        print("[CONFIG] Режим пробуждения отключен, микрофон всегда активен")
+    else:
+        print(f"[CONFIG] Режим пробуждения включен, ключевое слово: '{WAKEWORD}'")
+    
     if args.cli:
         # CLI-режим: только агент, без микрофона и ws-сервисов
         print("[CLI MODE] Запуск агента в текстовом режиме. Введите 'exit' для выхода.")
@@ -107,7 +125,12 @@ async def main():
 
     # Запуск микрофонного клиента
     print("[START] Запуск микрофонного клиента...")
-    mic_proc = subprocess.Popen([str(venv_python), 'mic_client.py'], env=env)
+    mic_cmd = [str(venv_python), 'mic_client.py']
+    if args.no_wake:
+        mic_cmd.append('--no-wake')
+    if args.device is not None:
+        mic_cmd.extend(['--device', str(args.device)])
+    mic_proc = subprocess.Popen(mic_cmd, env=env)
     processes.append(mic_proc)
 
     print("\n[INFO] Все сервисы запущены. Для остановки нажмите Ctrl+C.\n")

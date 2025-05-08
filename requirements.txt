@@ -11,4 +11,5 @@ onnxruntime>=1.16.0
 langgraph>=0.0.15
 langchain-core>=0.1.0
 langchain-anthropic>=0.1.2
-langchain-ollama>=0.0.1 
+langchain-ollama>=0.0.1
+pocketsphinx 

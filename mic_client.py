@@ -9,6 +9,8 @@ import os
 import sys
 from dotenv import load_dotenv
 import soundfile as sf
+import queue
+from wake_detector import WakeWordDetector
 
 # --- CONFIG & GLOBALS ---
 load_dotenv()
@@ -20,9 +22,18 @@ FRAME_DURATION_MS = 30
 FRAME_SIZE = int(SAMPLE_RATE * (FRAME_DURATION_MS / 1000))
 SILENCE_THRESHOLD_FRAMES = int(1000 / FRAME_DURATION_MS)  # ~1 секунда тишины
 SPEECH_START_THRESHOLD = 3
+WAKEWORD = os.getenv("WAKEWORD", "okey")
+
+# Enable or disable wake word detection
+USE_WAKE_WORD = os.getenv("USE_WAKE_WORD", "true").lower() in ("true", "1", "yes")
 
 vad = webrtcvad.Vad()
 vad.set_mode(3)
+
+# Shared state between wake detection and command detection
+wake_event = threading.Event()
+audio_queue = queue.Queue()
+wake_detector = None  # Will be initialized in main()
 
 # --- UTILS ---
 def print_available_devices():
@@ -62,6 +73,13 @@ def play_audio(audio_data):
         except Exception as e:
             print(f"[WARNING] Не удалось удалить временный файл: {e}")
 
+# --- WAKE WORD HANDLING ---
+def on_wake_word_detected(detected_text):
+    """Called when wake word is detected"""
+    print(f"[WAKE] Detected wake word: '{detected_text}', now listening for command...")
+    play_audio(b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00")  # Short beep sound
+    wake_event.set()
+
 # --- VAD + MIC ---
 async def vad_record_and_send(device=None):
     while True:
@@ -75,16 +93,20 @@ async def vad_record_and_send(device=None):
             await asyncio.sleep(5)
 
 async def mic_stream_loop(ws, device=None):
-    audio_queue = []
+    global audio_queue
+    mic_queue = []
     in_speech = False
     speech_frames = 0
     silence_frames = 0
     audio_buffer = []
     processing_speech = False
+    waiting_for_wake_word = USE_WAKE_WORD  # Start in wake word mode if enabled
+    
     def callback(indata, frames, time_info, status):
         if status:
             print(f"Status: {status}")
-        audio_queue.append(bytes(indata))
+        mic_queue.append(bytes(indata))
+    
     kwargs = {
         'samplerate': SAMPLE_RATE,
         'blocksize': FRAME_SIZE,
@@ -94,14 +116,55 @@ async def mic_stream_loop(ws, device=None):
     }
     if device is not None:
         kwargs['device'] = device
+    
     with sd.RawInputStream(**kwargs):
         print("[INFO] Слушаю микрофон...")
+        if waiting_for_wake_word:
+            print(f"[INFO] Ожидаю пробуждение командой '{WAKEWORD}'...")
+        
         while True:
-            if not audio_queue:
+            # Check if wake word was detected
+            if waiting_for_wake_word and wake_event.is_set():
+                waiting_for_wake_word = False
+                wake_event.clear()
+                time.sleep(0.2)  # Small delay after wake word
+                
+                # Clear any buffered audio to start fresh for command
+                audio_buffer.clear()
+                mic_queue.clear()
+                in_speech = False
+                speech_frames = 0
+                silence_frames = 0
+                
+                # Set a timer to return to wake word mode after some inactivity
+                def reset_to_wake_word():
+                    nonlocal waiting_for_wake_word
+                    if USE_WAKE_WORD and not in_speech and not processing_speech:
+                        waiting_for_wake_word = True
+                        print("[INFO] Возвращаюсь в режим ожидания пробуждения...")
+                
+                # Schedule reset after 15 seconds of inactivity
+                timer = threading.Timer(15.0, reset_to_wake_word)
+                timer.daemon = True
+                timer.start()
+                
+                print("[INFO] Жду команду...")
+            
+            # Skip audio processing in wake word mode
+            if waiting_for_wake_word:
+                # We still need to consume from the mic queue to keep it from growing
+                if mic_queue:
+                    mic_queue.pop(0)
                 time.sleep(0.01)
                 continue
-            data = audio_queue.pop(0)
+            
+            if not mic_queue:
+                time.sleep(0.01)
+                continue
+            
+            data = mic_queue.pop(0)
             is_speech_frame = vad.is_speech(data, SAMPLE_RATE)
+            
             if not in_speech:
                 if is_speech_frame:
                     speech_frames += 1
@@ -128,10 +191,17 @@ async def mic_stream_loop(ws, device=None):
                         audio_buffer.clear()
                         speech_frames = 0
                         silence_frames = 0
+                        
                         if not processing_speech and len(combined_data) > 0:
                             processing_speech = True
                             await process_and_send(ws, combined_data)
                             processing_speech = False
+                            
+                            # After processing speech, return to wake word mode if enabled
+                            if USE_WAKE_WORD:
+                                waiting_for_wake_word = True
+                                print("[INFO] Возвращаюсь в режим ожидания пробуждения...")
+            
             time.sleep(0.01)
 
 async def process_and_send(ws, combined_data):
@@ -173,24 +243,50 @@ async def process_and_send(ws, combined_data):
     except Exception as e:
         print(f"[ERROR] Ошибка при отправке/получении: {e}")
 
+def run_wake_detector():
+    """Run the wake word detector in a separate thread"""
+    global wake_detector
+    wake_detector = WakeWordDetector(callback=on_wake_word_detected)
+    try:
+        wake_detector.start()
+    except Exception as e:
+        print(f"[ERROR] Wake word detector error: {e}")
+
 # --- MAIN ENTRYPOINT ---
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Микрофонный клиент с поддержкой VAD")
     parser.add_argument("--device", type=int, help="Индекс устройства ввода (см. --list-devices)")
     parser.add_argument("--list-devices", action="store_true", help="Показать список доступных устройств")
+    parser.add_argument("--no-wake", action="store_true", help="Отключить режим wake word (всегда слушать)")
     args = parser.parse_args()
+    
     if args.list_devices:
         print_available_devices()
         sys.exit(0)
-    t1 = threading.Thread(target=lambda: asyncio.run(vad_record_and_send(device=args.device)), daemon=True)
-    t1.start()
+    
+    global USE_WAKE_WORD
+    if args.no_wake:
+        USE_WAKE_WORD = False
+    
+    # Start wake word detection if enabled
+    if USE_WAKE_WORD:
+        wake_thread = threading.Thread(target=run_wake_detector, daemon=True)
+        wake_thread.start()
+        print("[INFO] Wake word детектор запущен")
+    
+    # Start the main microphone listening thread
+    mic_thread = threading.Thread(target=lambda: asyncio.run(vad_record_and_send(device=args.device)), daemon=True)
+    mic_thread.start()
+    
     print("[INFO] Клиент запущен. Для выхода нажмите Ctrl+C")
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[INFO] Клиент остановлен")
+        if wake_detector:
+            wake_detector.stop()
 
 if __name__ == "__main__":
     main() 
