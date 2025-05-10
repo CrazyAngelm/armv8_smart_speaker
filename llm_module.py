@@ -18,6 +18,7 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
 LOCAL_MAX_TOKENS = int(os.getenv("LOCAL_MAX_TOKENS", "128"))    # num_predict
 LOCAL_CONTEXT    = int(os.getenv("LOCAL_CONTEXT",    "512"))   # num_ctx
 LOCAL_THREADS    = int(os.getenv("LOCAL_THREADS",    "0"))      # num_thread (0 = autodetect)
+LOCAL_KEEP_ALIVE = int(os.getenv("LOCAL_KEEP_ALIVE", "-1"))    # keep_alive
 LOCAL_TOP_P      = float(os.getenv("LOCAL_TOP_P",   "0.9"))    # top_p
 LOCAL_TOP_K      = int(os.getenv("LOCAL_TOP_K",       "40"))   # top_k
 
@@ -43,6 +44,7 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
                 num_predict=LOCAL_MAX_TOKENS,
                 num_ctx=LOCAL_CONTEXT,
                 num_thread=LOCAL_THREADS,
+                keep_alive=LOCAL_KEEP_ALIVE,
                 top_p=LOCAL_TOP_P,
                 top_k=LOCAL_TOP_K,
             )

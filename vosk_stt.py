@@ -6,6 +6,7 @@ from vosk import Model, KaldiRecognizer
 from typing import Optional
 from dotenv import load_dotenv
 import numpy as np
+import webrtcvad
 
 load_dotenv()
 
@@ -21,21 +22,36 @@ ENERGY_THRESHOLD = float(os.getenv("ENERGY_THRESHOLD", "0.005"))
 MIN_SPEECH_DURATION = float(os.getenv("MIN_SPEECH_DURATION", "0.3"))
 PCM_SAMPLE_RATE = int(os.getenv("PCM_SAMPLE_RATE", 16000))
 
+# --- Глобальная загрузка модели Vosk (один раз) ---
+model = Model(VOSK_MODEL_PATH)
+
+# --- WebRTC-VAD ---
+vad = webrtcvad.Vad(2)  # 0-3, где 3 — самая агрессивная фильтрация
+VAD_FRAME_MS = 30  # длина одного фрейма для VAD (10, 20 или 30 мс)
+
 # Класс для аудиосообщений
 class AudioMsg:
     def __init__(self, raw: bytes, sr: int = PCM_SAMPLE_RATE):
         self.raw = raw
         self.sr = sr
 
-# --- VAD: Проверка наличия речи по энергии ---
+# --- VAD: Проверка наличия речи через WebRTC-VAD ---
 def detect_speech(audio_bytes: bytes, sample_rate: int) -> bool:
-    # Преобразуем байты в numpy array
-    audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-    energy = np.mean(np.square(audio_array))
-    frames_over_threshold = np.sum(np.square(audio_array) > ENERGY_THRESHOLD)
-    min_speech_samples = int(MIN_SPEECH_DURATION * sample_rate)
-    has_speech = energy > ENERGY_THRESHOLD and frames_over_threshold > min_speech_samples
-    print(f"[VAD] Audio energy: {energy:.6f}, Threshold: {ENERGY_THRESHOLD}, Has speech: {has_speech}")
+    # WebRTC-VAD работает с 16-бит PCM, 8/16/32 кГц, моно
+    frame_size = int(sample_rate * VAD_FRAME_MS / 1000) * 2  # 2 байта на сэмпл
+    num_frames = len(audio_bytes) // frame_size
+    speech_frames = 0
+    for i in range(num_frames):
+        start = i * frame_size
+        end = start + frame_size
+        frame = audio_bytes[start:end]
+        if len(frame) < frame_size:
+            break
+        if vad.is_speech(frame, sample_rate):
+            speech_frames += 1
+    min_speech_frames = max(1, int(0.3 * 1000 / VAD_FRAME_MS))  # минимум 0.3 сек речи
+    has_speech = speech_frames >= min_speech_frames
+    print(f"[VAD] Speech frames: {speech_frames}, Min required: {min_speech_frames}, Has speech: {has_speech}")
     return has_speech
 
 # Функция распознавания речи через Vosk
@@ -44,15 +60,10 @@ async def stt_vosk(audio: AudioMsg) -> str:
     Асинхронная функция распознавания речи через Vosk.
     Принимает AudioMsg (raw PCM 16kHz LE mono), возвращает строку.
     """
-    if not os.path.exists(VOSK_MODEL_PATH):
-        raise RuntimeError(f"Модель Vosk не найдена по пути: {VOSK_MODEL_PATH}")
-    
     # VAD: Проверяем, содержит ли аудио речь
     if not detect_speech(audio.raw, audio.sr):
         return "Не удалось распознать речь"
-    
-    # Загружаем модель и создаем распознаватель
-    model = Model(VOSK_MODEL_PATH)
+    # Используем глобальную модель
     rec = KaldiRecognizer(model, audio.sr)
     
     # Обрабатываем аудиоданные
