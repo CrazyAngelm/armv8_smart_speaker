@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import asyncio
 import websockets
 import argparse
+import threading
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -102,6 +103,13 @@ async def main():
 
     processes = []
     env = os.environ.copy()
+
+    # --- Запуск backend MQTT ---
+    print("[START] Запуск backend MQTT...")
+    backend_proc = subprocess.Popen([str(venv_python), 'backend/mqtt_backend.py'], env=env)
+    processes.append(backend_proc)
+    await asyncio.sleep(2)  # Даем backend подняться
+
     # Запуск STT сервера
     print("[START] Запуск Vosk STT сервера...")
     stt_proc = subprocess.Popen([str(venv_python), 'vosk_stt.py', 'ws'], env=env)

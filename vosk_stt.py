@@ -91,7 +91,13 @@ async def stt_ws_handler(ws):
 async def main_ws():
     print(f"[STT WS] Serving on ws://{STT_WS_HOST}:{STT_WS_PORT}")
     print(f"[STT WS] Using Vosk model: {VOSK_MODEL_PATH}")
-    async with websockets.serve(stt_ws_handler, STT_WS_HOST, STT_WS_PORT, max_size=8*2**20, ping_interval=30, ping_timeout=30):
+    async with websockets.serve(
+        stt_ws_handler, 
+        STT_WS_HOST, 
+        STT_WS_PORT, 
+        max_size=8*2**20, 
+        ping_interval=300,   # 5 минут
+        ping_timeout=None):  # Без таймаута
         await asyncio.Future()  # run forever
 
 # Тестовая функция для прямого использования модуля

@@ -135,7 +135,13 @@ async def tts_ws_handler(ws):
 
 async def main_ws():
     print(f"[TTS WS] Starting server on port {TTS_WS_PORT}")
-    async with websockets.serve(tts_ws_handler, TTS_WS_HOST, TTS_WS_PORT, max_size=8*2**20, ping_interval=30, ping_timeout=30):
+    async with websockets.serve(
+        tts_ws_handler, 
+        TTS_WS_HOST, 
+        TTS_WS_PORT, 
+        max_size=8*2**20, 
+        ping_interval=300,   # 5 минут
+        ping_timeout=None):  # Без таймаута
         await asyncio.Future()  # run forever
 
 # === Тестовый запуск ===

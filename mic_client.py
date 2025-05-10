@@ -85,7 +85,9 @@ async def vad_record_and_send(device=None):
     while True:
         try:
             print(f"[INFO] Connecting to {URI} (микрофон)")
-            async with websockets.connect(URI, max_size=8*2**20, ping_interval=30, ping_timeout=30) as ws:
+            async with websockets.connect(URI, max_size=8*2**20, 
+                                         ping_interval=300, # 5 минут между пингами
+                                         ping_timeout=None) as ws:  # отключаем таймаут
                 await mic_stream_loop(ws, device)
         except Exception as e:
             print(f"[ERROR] Ошибка соединения: {e} (микрофон)")
@@ -206,11 +208,12 @@ async def mic_stream_loop(ws, device=None):
 
 async def process_and_send(ws, combined_data):
     try:
+        # Увеличиваем таймаут ожидания ответа, если используется
         await ws.send(combined_data)
         await ws.send("END")
         
-        # Обработка ответа, который может быть разбит на части
-        response = await ws.recv()
+        # Добавляем большой таймаут для операций recv
+        response = await asyncio.wait_for(ws.recv(), timeout=3600)  # 1 час таймаут
         
         # Проверяем, начинается ли передача фрагментированного аудио
         if response == "AUDIO_CHUNKS_BEGIN":
@@ -240,6 +243,9 @@ async def process_and_send(ws, combined_data):
             threading.Thread(target=play_audio, args=(response,)).start()
         else:
             print(f"[INFO] Получен текстовый ответ: {response}")
+    except asyncio.TimeoutError:
+        print("[ERROR] Таймаут при ожидании ответа от сервера")
+        # Повторное подключение или другая обработка таймаута
     except Exception as e:
         print(f"[ERROR] Ошибка при отправке/получении: {e}")
 

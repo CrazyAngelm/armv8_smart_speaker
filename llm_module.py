@@ -1,7 +1,7 @@
 import os
 import json
 import asyncio
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.language_models import BaseChatModel
@@ -62,9 +62,14 @@ class LLMManager:
         self.llm = _init_llm(self.provider, self.temperature)
         print(f"[INFO] Initialized LLM provider: {self.provider}")
 
-    async def generate_response(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate_response(self, prompt: str, system_prompt: Optional[str] = None, tools: Optional[List[Dict[str, Any]]] = None) -> str:
         """
         Генерирует ответ для заданного запроса.
+        
+        Args:
+            prompt: Запрос пользователя
+            system_prompt: Опциональный системный промпт
+            tools: Опциональный список инструментов для LLM
         """
         messages = []
         if system_prompt:
@@ -72,7 +77,14 @@ class LLMManager:
         messages.append(HumanMessage(content=prompt))
         try:
             print(f"[LOG] [LLM] Отправка запроса модели: {prompt[:50]}...")
-            response = await self.llm.ainvoke(messages)
+            
+            # Используем инструменты, если они предоставлены
+            if tools:
+                model_with_tools = self.llm.bind_tools(tools)
+                response = await model_with_tools.ainvoke(messages)
+            else:
+                response = await self.llm.ainvoke(messages)
+                
             print(f"[LOG] [LLM] Получен ответ модели: {str(response)[:100]}...")
             
             # Извлекаем текст ответа из различных форматов

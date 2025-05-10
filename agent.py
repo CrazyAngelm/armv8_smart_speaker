@@ -1,13 +1,19 @@
 import asyncio, os, websockets
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Dict
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from llm_module import LLMManager
 import time
 import json
+from langgraph.prebuilt import ToolNode, tools_condition
+# Импортируем mqtt_tools
+from mqtt_tools import tools, execute_tool, init_mqtt
 
 load_dotenv()
+
+# Инициализация MQTT при запуске
+init_mqtt()
 
 # ---------- Типы сообщений ----------
 @dataclass
@@ -23,6 +29,8 @@ class TextMsg:
 class AgentState:
     audio: Optional[AudioMsg] = None
     text:  Optional[TextMsg]  = None
+    tool_calls: Optional[list] = None  # Добавляем поддержку вызовов инструментов
+    tool_results: Optional[Dict[str, Any]] = None  # Результаты выполнения инструментов
 
 # ---------- WebSocket клиенты ----------
 STT_WS_HOST = os.getenv("STT_WS_HOST", "localhost") 
@@ -115,6 +123,12 @@ def get_system_prompt():
         "Старайся давать полезные ответы на запросы пользователя. "
         "Помогай с информацией о процессах, оборудовании или технических вопросах. "
         "Если не знаешь ответ, честно скажи об этом."
+        "У тебя есть следующие функции:\n"
+        "1. Узнать текущее время (get_time)\n"
+        "2. Установить таймер (set_timer)\n"
+        "3. Установить напоминание с текстом (set_notification)\n"
+        "4. Узнать погоду (get_weather)\n"
+        "5. Позвонить контакту (call_contact)\n"
     )
 
 # Инициализация менеджера LLM
@@ -153,19 +167,146 @@ async def llm_node(state: AgentState) -> AgentState:
         # Получаем системный промпт
         current_system_prompt = get_system_prompt()
         t_llm0 = time.perf_counter()
-        # Используем LLMManager для генерации ответа
-        reply = await llm_manager.generate_response(
-            prompt=txt,
-            system_prompt=current_system_prompt
-        )
+        
+        # Привязываем инструменты к LLM
+        llm_with_tools = llm_manager.llm.bind_tools(tools)
+        
+        # Используем LLM с инструментами для генерации ответа
+        result = await llm_with_tools.ainvoke([
+            {"role": "system", "content": current_system_prompt},
+            {"role": "user", "content": txt}
+        ])
+        
         t_llm1 = time.perf_counter()
-        print(f"[PROFILE] LLMManager.generate_response: {t_llm1-t_llm0:.2f} сек")
+        print(f"[PROFILE] LLM tool invocation: {t_llm1-t_llm0:.2f} сек")
+        
+        # Проверяем наличие tool_calls в ответе
+        if hasattr(result, 'tool_calls') and result.tool_calls:
+            print(f"[LOG] [LLM] LLM вызвал инструменты: {result.tool_calls}")
+            state.tool_calls = result.tool_calls
+            return state
+            
+        # Если нет вызовов инструментов, используем обычный ответ
+        reply = result.content if hasattr(result, 'content') else str(result)
     except Exception as e:
         print(f"[ERROR] LLM error: {e}")
         reply = "Извините, произошла ошибка. Можете повторить ваш вопрос?"
     t1 = time.perf_counter()
     print(f"[PROFILE] LLM node (всего): {t1-t0:.2f} сек")
     state.text = TextMsg(reply)
+    return state
+
+# Узел для выполнения инструментов
+async def tools_node(state: AgentState) -> AgentState:
+    """Выполняет инструменты, вызванные LLM"""
+    if not state.tool_calls:
+        return state
+    
+    print(f"[LOG] [TOOLS] Начинаю выполнение {len(state.tool_calls)} инструментов")
+    results = {}
+    
+    for tool_call in state.tool_calls:
+        tool_name = tool_call.get("name", None)
+        if not tool_name:
+            print(f"[ERROR] Инструмент не содержит имя: {tool_call}")
+            continue
+            
+        # Извлекаем аргументы
+        try:
+            tool_args = tool_call.get("args", {})
+            if isinstance(tool_args, str):
+                tool_args = json.loads(tool_args)
+        except Exception as e:
+            print(f"[ERROR] Ошибка при разборе аргументов инструмента: {e}")
+            tool_args = {}
+        
+        print(f"[LOG] [TOOLS] Выполнение инструмента: {tool_name} с аргументами {tool_args}")
+        
+        # Выполняем инструмент
+        result = execute_tool(tool_name, tool_args)
+        results[tool_call.get("id", f"tool_{len(results)}")] = result
+        print(f"[LOG] [TOOLS] Результат выполнения {tool_name}: {result}")
+    
+    state.tool_results = results
+    return state
+
+# Узел для обработки результатов инструментов
+async def tool_results_processor(state: AgentState) -> AgentState:
+    """Обрабатывает результаты выполнения инструментов и формирует ответ"""
+    if not state.tool_results:
+        return state
+    
+    try:
+        # Формируем сообщение с результатами выполнения всех инструментов
+        tool_messages = []
+        first_result = ""
+        for tool_id, result in state.tool_results.items():
+            # Запоминаем первый результат, чтобы использовать его как запасной вариант
+            if not first_result:
+                first_result = str(result)
+            
+            tool_messages.append({
+                "tool_call_id": tool_id,
+                "role": "tool",
+                "content": str(result)
+            })
+        
+        # Получаем системный промпт
+        current_system_prompt = get_system_prompt()
+        
+        # Собираем историю общения для отправки в LLM
+        messages = [
+            {"role": "system", "content": current_system_prompt},
+            {"role": "user", "content": state.text.text}
+        ]
+        
+        # Добавляем информацию о вызове инструментов
+        for tool_call in state.tool_calls:
+            tool_call_message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [tool_call]
+            }
+            messages.append(tool_call_message)
+        
+        # Добавляем результаты выполнения инструментов
+        messages.extend(tool_messages)
+        
+        # Отправляем в LLM для формирования окончательного ответа
+        try:
+            reply = await llm_manager.llm.ainvoke(messages)
+            
+            # Извлекаем ответ
+            if hasattr(reply, 'content'):
+                response_text = reply.content
+            else:
+                response_text = str(reply)
+                
+            # Проверяем, если ответ пустой или [], используем результат инструмента напрямую
+            if not response_text or response_text == "[]":
+                print(f"[LOG] [TOOL_RESULTS] Получен пустой ответ от LLM, используем результат инструмента напрямую: {first_result}")
+                response_text = first_result
+        except Exception as e:
+            print(f"[ERROR] Ошибка при получении ответа от LLM: {e}")
+            # Используем результат инструмента напрямую
+            response_text = first_result
+        
+        print(f"[LOG] [TOOL_RESULTS] Окончательный ответ: {response_text}")
+        state.text = TextMsg(response_text)
+        
+        # Очищаем информацию об инструментах, так как обработка завершена
+        state.tool_calls = None
+        state.tool_results = None
+        
+    except Exception as e:
+        print(f"[ERROR] Ошибка при обработке результатов инструментов: {e}")
+        # Здесь также используем результат инструмента, если что-то пошло не так
+        if state.tool_results and len(state.tool_results) > 0:
+            first_result = next(iter(state.tool_results.values()))
+            state.text = TextMsg(str(first_result))
+        else:
+            state.text = TextMsg(f"Произошла ошибка при обработке результатов: {str(e)}")
+    
     return state
 
 async def tts_node(state: AgentState) -> AgentState:
@@ -176,6 +317,15 @@ async def tts_node(state: AgentState) -> AgentState:
         except Exception as e:
             print(f"[ERROR] TTS error: {e}")
     return state
+
+# ---------- Функция-маршрутизатор для инструментов ----------
+def tools_router(state: AgentState) -> Literal["tools", "tool_results_processor", END]:
+    """Маршрутизирует запросы на основе наличия вызовов инструментов"""
+    if state.tool_calls:
+        return "tools"
+    elif state.tool_results:
+        return "tool_results_processor"
+    return END
 
 # ---------- Функция‑маршрутизатор ----------
 def wake_router(state: AgentState) -> Literal["llm", END]:
@@ -188,6 +338,8 @@ def wake_router(state: AgentState) -> Literal["llm", END]:
 workflow = StateGraph(AgentState)
 workflow.add_node("stt", stt_node)
 workflow.add_node("llm", llm_node)
+workflow.add_node("tools", tools_node)
+workflow.add_node("tool_results_processor", tool_results_processor)
 workflow.add_node("tts", tts_node)
 
 workflow.add_edge(START, "stt")      # начало → STT
@@ -195,7 +347,18 @@ workflow.add_conditional_edges(      # STT → (LLM или END)
     "stt",
     wake_router                      # callable‑router
 )
-workflow.add_edge("llm", "tts")      # LLM → TTS
+
+# Добавляем условный переход от LLM к обработчику инструментов или TTS
+workflow.add_conditional_edges(
+    "llm",
+    tools_router
+)
+
+# Добавляем переход от инструментов к обработке результатов
+workflow.add_edge("tools", "tool_results_processor")
+
+# Добавляем переход от результатов инструментов к TTS
+workflow.add_edge("tool_results_processor", "tts")
 
 app = workflow.compile()
 
@@ -245,8 +408,9 @@ async def handle(ws):
                             result = await app.ainvoke(state)
                             print(f"[LOG] [AGENT] Обработка завершена. Тип результата: {type(result)}")
                             
-                            # Извлекаем аудио ответ
+                            # Извлекаем аудио ответ или текст для синтеза ответа
                             audio_result = None
+                            text_to_speak = None
                             
                             # Проверяем, есть ли аудио в результате
                             if hasattr(result, 'values'):
@@ -261,31 +425,40 @@ async def handle(ws):
                                         print(f"[LOG] [AGENT] Найдено аудио в ключе {key}")
                                         audio_result = value.audio
                                         break
-                                        
-                                # Если не нашли аудио, но есть текст, синтезируем заново
+                                
+                                # Если не нашли аудио, ищем текст для озвучивания
                                 if not audio_result:
                                     print(f"[LOG] [AGENT] Аудио не найдено, ищем текст для синтеза...")
                                     for key, value in values_dict.items():
-                                        text_message = None
                                         # Проверяем, является ли значение TextMsg
                                         if hasattr(value, 'text') and value.text and hasattr(value.text, 'text'):
                                             print(f"[LOG] [AGENT] Найден TextMsg в ключе {key}")
-                                            text_message = value.text.text
+                                            text_to_speak = value.text.text
+                                            break
                                         # Проверяем, является ли значение строкой
                                         elif isinstance(value, str):
                                             print(f"[LOG] [AGENT] Найдена строка в ключе {key}")
-                                            text_message = value
+                                            text_to_speak = value
+                                            break
                                         # Проверяем, является ли само значение TextMsg
                                         elif isinstance(value, TextMsg):
                                             print(f"[LOG] [AGENT] Найден прямой TextMsg в ключе {key}")
-                                            text_message = value.text
-                                        
-                                        if text_message:
-                                            print(f"[LOG] [AGENT] Синтезируем речь из найденного текста: {text_message}")
-                                            audio_bytes = await tts_client(text_message)
-                                            audio_result = AudioMsg(audio_bytes, sr=48000)
+                                            text_to_speak = value.text
                                             break
-                                            
+                                    
+                                    # Проверяем, получили ли мы текст
+                                    if text_to_speak:
+                                        print(f"[LOG] [AGENT] Синтезируем речь из найденного текста: {text_to_speak}")
+                                        try:
+                                            audio_bytes = await tts_client(text_to_speak)
+                                            audio_result = AudioMsg(audio_bytes, sr=48000)
+                                            print(f"[LOG] [AGENT] Успешно синтезирована речь, размер аудио: {len(audio_bytes)} байт")
+                                        except Exception as e:
+                                            print(f"[ERROR] [AGENT] Ошибка при синтезе речи: {e}")
+                                            await ws.send(f"ERROR: Ошибка при синтезе речи: {e}")
+                                            audio_chunks = []
+                                            continue
+                            
                             # Если аудио найдено, отправляем его (с разбивкой на части, если нужно)
                             if audio_result:
                                 audio_size = len(audio_result.raw)
@@ -310,8 +483,9 @@ async def handle(ws):
                                     # Отправляем целиком, если маленькое
                                     await ws.send(audio_result.raw)
                             else:
-                                print("[LOG] [WS] Аудио-ответ не найден!")
-                                await ws.send("ERROR: No audio result found")
+                                print("[ERROR] [WS] Аудио-ответ не найден и не удалось синтезировать речь!")
+                                # Делаем фиктивный звуковой сигнал
+                                await ws.send(b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00")
                             
                         except Exception as e:
                             print(f"[ERROR] Error processing request: {e}")
@@ -330,8 +504,8 @@ async def main_ws():
     print(f"[WS] Serving on ws://{HOST}:{PORT}")
     async with websockets.serve(
         handle, HOST, PORT, max_size=8*2**20,
-        ping_interval=30,  # seconds between pings
-        ping_timeout=30    # seconds to wait for pong
+        ping_interval=300,  # увеличиваем до 5 минут
+        ping_timeout=None   # отключаем таймаут полностью
     ):
         await asyncio.Future()
 
@@ -347,10 +521,24 @@ async def cli_loop():
                 continue
             # Создаем состояние агента с текстом
             state = AgentState(text=TextMsg(user_input))
-            # Обрабатываем через llm_node
-            new_state = await llm_node(state)
-            if new_state.text:
-                print(f"Ассистент: {new_state.text.text}")
+            
+            # Запускаем обработку через граф
+            print(f"[LOG] [CLI] Запуск обработки через LangGraph...")
+            result = await app.ainvoke(state)
+            
+            # Извлекаем ответ
+            response_text = None
+            if hasattr(result, 'values'):
+                for key, value in dict(result).items():
+                    if hasattr(value, 'text') and value.text:
+                        response_text = value.text.text
+                        break
+            
+            if response_text:
+                print(f"Ассистент: {response_text}")
+            else:
+                print("Ассистент: [Нет ответа]")
+                
         except (KeyboardInterrupt, EOFError):
             print("\n[CLI] Завершение работы.")
             break
