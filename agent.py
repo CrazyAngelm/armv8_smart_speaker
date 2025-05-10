@@ -9,6 +9,7 @@ import json
 from langgraph.prebuilt import ToolNode, tools_condition
 # Импортируем mqtt_tools
 from mqtt_tools import tools, execute_tool, init_mqtt
+import re
 
 load_dotenv()
 
@@ -62,6 +63,8 @@ async def stt_vosk(audio: AudioMsg) -> str:
 def extract_tts_text(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
+    # Удаляем содержимое <think>...</think> вместе с тегами
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
     if text.startswith('[') or text.startswith('{'):
         try:
             data = json.loads(text)
@@ -92,7 +95,7 @@ def extract_tts_text(text: str) -> str:
                 return extracted_text.strip()
         except Exception as e:
             print(f"[LOG] [TTS] Ошибка при извлечении текста из структуры: {e}")
-    return text
+    return text.strip()
 
 # ---------- TTS клиент ----------
 async def tts_client(text: str) -> bytes:
