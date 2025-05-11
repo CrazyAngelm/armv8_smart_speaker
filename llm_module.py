@@ -9,11 +9,11 @@ from langchain_core.language_models import BaseChatModel
 # --- ENVIRONMENT & GLOBALS ---
 load_dotenv()
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "claude").lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "deepseek").lower()
 LLM_MODEL = os.getenv("LLM_MODEL", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307")
 LOCAL_MODEL = os.getenv("LOCAL_MODEL", "gemma3:12b")
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
 
 LOCAL_MAX_TOKENS = int(os.getenv("LOCAL_MAX_TOKENS", "128"))    # num_predict
 LOCAL_CONTEXT    = int(os.getenv("LOCAL_CONTEXT",    "512"))   # num_ctx
@@ -37,7 +37,7 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
             raise ImportError("[ERROR] langchain-anthropic not installed. Run: pip install langchain-anthropic")
     elif provider == "local":
         try:
-            from langchain_community.chat_models import ChatOllama
+            from langchain_ollama import ChatOllama
             return ChatOllama(
                 model=model, 
                 temperature=temperature,
@@ -47,7 +47,6 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
                 keep_alive=LOCAL_KEEP_ALIVE,
                 top_p=LOCAL_TOP_P,
                 top_k=LOCAL_TOP_K,
-                format="json"
             )
         except ImportError:
             raise ImportError("[ERROR] langchain-ollama not installed. Run: pip install langchain-ollama")

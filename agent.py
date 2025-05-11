@@ -10,9 +10,6 @@ from langgraph.prebuilt import ToolNode, tools_condition
 # Импортируем mqtt_tools
 from mqtt_tools import tools, execute_tool, init_mqtt
 import re
-from langchain_core.messages import (
-    SystemMessage, HumanMessage, AIMessage, ToolMessage
-)
 
 load_dotenv()
 
@@ -174,16 +171,14 @@ async def llm_node(state: AgentState) -> AgentState:
         current_system_prompt = get_system_prompt()
         t_llm0 = time.perf_counter()
         
-        messages = [
-            SystemMessage(content=current_system_prompt),
-            HumanMessage(content=txt)
-        ]
-        
         # Привязываем инструменты к LLM
         llm_with_tools = llm_manager.llm.bind_tools(tools)
         
         # Используем LLM с инструментами для генерации ответа
-        result = await llm_with_tools.ainvoke(messages)
+        result = await llm_with_tools.ainvoke([
+            {"role": "system", "content": current_system_prompt},
+            {"role": "user", "content": txt}
+        ])
         
         t_llm1 = time.perf_counter()
         print(f"[PROFILE] LLM tool invocation: {t_llm1-t_llm0:.2f} сек")
@@ -213,26 +208,20 @@ async def tools_node(state: AgentState) -> AgentState:
     print(f"[LOG] [TOOLS] Начинаю выполнение {len(state.tool_calls)} инструментов")
     results = {}
     
-    def _extract_call(tc: dict):
-        # 1) Схема Anthropic / старых моделей
-        if "name" in tc:
-            name = tc["name"]
-            args = tc.get("args") or tc.get("arguments", {})
-        # 2) OpenAI / Ollama >= 0.1.34
-        elif "function" in tc:
-            name = tc["function"].get("name")
-            args = tc["function"].get("arguments", {})
-        else:
-            return None, {}
-        if isinstance(args, str):          # строка-JSON → dict
-            args = json.loads(args) or {}
-        return name, args
-    
     for tool_call in state.tool_calls:
-        tool_name, tool_args = _extract_call(tool_call)
+        tool_name = tool_call.get("name", None)
         if not tool_name:
-            print(f"[TOOLS] Не смог разобрать tool_call: {tool_call}")
+            print(f"[ERROR] Инструмент не содержит имя: {tool_call}")
             continue
+            
+        # Извлекаем аргументы
+        try:
+            tool_args = tool_call.get("args", {})
+            if isinstance(tool_args, str):
+                tool_args = json.loads(tool_args)
+        except Exception as e:
+            print(f"[ERROR] Ошибка при разборе аргументов инструмента: {e}")
+            tool_args = {}
         
         print(f"[LOG] [TOOLS] Выполнение инструмента: {tool_name} с аргументами {tool_args}")
         
@@ -251,19 +240,40 @@ async def tool_results_processor(state: AgentState) -> AgentState:
         return state
     
     try:
+        # Формируем сообщение с результатами выполнения всех инструментов
+        tool_messages = []
+        first_result = ""
+        for tool_id, result in state.tool_results.items():
+            # Запоминаем первый результат, чтобы использовать его как запасной вариант
+            if not first_result:
+                first_result = str(result)
+            
+            tool_messages.append({
+                "tool_call_id": tool_id,
+                "role": "tool",
+                "content": str(result)
+            })
+        
         # Получаем системный промпт
         current_system_prompt = get_system_prompt()
         
         # Собираем историю общения для отправки в LLM
         messages = [
-            SystemMessage(content=current_system_prompt),
-            HumanMessage(content=state.text.text),
-            AIMessage(content=None, tool_calls=state.tool_calls)
+            {"role": "system", "content": current_system_prompt},
+            {"role": "user", "content": state.text.text}
         ]
         
+        # Добавляем информацию о вызове инструментов
+        for tool_call in state.tool_calls:
+            tool_call_message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [tool_call]
+            }
+            messages.append(tool_call_message)
+        
         # Добавляем результаты выполнения инструментов
-        for tc_id, res in state.tool_results.items():
-            messages.append(ToolMessage(content=str(res), tool_call_id=tc_id))
+        messages.extend(tool_messages)
         
         # Отправляем в LLM для формирования окончательного ответа
         try:
@@ -277,12 +287,12 @@ async def tool_results_processor(state: AgentState) -> AgentState:
                 
             # Проверяем, если ответ пустой или [], используем результат инструмента напрямую
             if not response_text or response_text == "[]":
-                print(f"[LOG] [TOOL_RESULTS] Получен пустой ответ от LLM, используем результат инструмента напрямую: {next(iter(state.tool_results.values()))}")
-                response_text = str(next(iter(state.tool_results.values())))
+                print(f"[LOG] [TOOL_RESULTS] Получен пустой ответ от LLM, используем результат инструмента напрямую: {first_result}")
+                response_text = first_result
         except Exception as e:
             print(f"[ERROR] Ошибка при получении ответа от LLM: {e}")
             # Используем результат инструмента напрямую
-            response_text = str(next(iter(state.tool_results.values())))
+            response_text = first_result
         
         print(f"[LOG] [TOOL_RESULTS] Окончательный ответ: {response_text}")
         state.text = TextMsg(response_text)
