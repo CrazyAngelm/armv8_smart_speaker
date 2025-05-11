@@ -37,7 +37,7 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
             raise ImportError("[ERROR] langchain-anthropic not installed. Run: pip install langchain-anthropic")
     elif provider == "local":
         try:
-            from langchain_ollama import ChatOllama
+            from langchain_community.chat_models import ChatOllama
             return ChatOllama(
                 model=model, 
                 temperature=temperature,
@@ -47,6 +47,7 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
                 keep_alive=LOCAL_KEEP_ALIVE,
                 top_p=LOCAL_TOP_P,
                 top_k=LOCAL_TOP_K,
+                format="json"
             )
         except ImportError:
             raise ImportError("[ERROR] langchain-ollama not installed. Run: pip install langchain-ollama")

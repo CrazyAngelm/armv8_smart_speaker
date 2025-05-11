@@ -121,11 +121,11 @@ async def tts_client(text: str) -> bytes:
 # Получаем системный промпт
 def get_system_prompt():
     return (
-        "Ты — умный голосовой помощник для промышленной среды. "
-        "Отвечай четко, по делу и профессионально. "
-        "Старайся давать полезные ответы на запросы пользователя. "
-        "Помогай с информацией о процессах, оборудовании или технических вопросах. "
+        "Ты — умный голосовой помощник для компании. "
+        "Отвечай четко, коротко, по делу и профессионально. "
         "Если не знаешь ответ, честно скажи об этом."
+        "Если твой ответ можно получить при помощи ОДНОЙ из функций ниже, "
+        "НЕ пиши ответ сам, а вызови соответствующую функцию.\n"
         "У тебя есть следующие функции:\n"
         "1. Узнать текущее время (get_time)\n"
         "2. Установить таймер (set_timer)\n"
@@ -208,20 +208,26 @@ async def tools_node(state: AgentState) -> AgentState:
     print(f"[LOG] [TOOLS] Начинаю выполнение {len(state.tool_calls)} инструментов")
     results = {}
     
+    def _extract_call(tc: dict):
+        # 1) Схема Anthropic / старых моделей
+        if "name" in tc:
+            name = tc["name"]
+            args = tc.get("args") or tc.get("arguments", {})
+        # 2) OpenAI / Ollama >= 0.1.34
+        elif "function" in tc:
+            name = tc["function"].get("name")
+            args = tc["function"].get("arguments", {})
+        else:
+            return None, {}
+        if isinstance(args, str):          # строка-JSON → dict
+            args = json.loads(args) or {}
+        return name, args
+    
     for tool_call in state.tool_calls:
-        tool_name = tool_call.get("name", None)
+        tool_name, tool_args = _extract_call(tool_call)
         if not tool_name:
-            print(f"[ERROR] Инструмент не содержит имя: {tool_call}")
+            print(f"[TOOLS] Не смог разобрать tool_call: {tool_call}")
             continue
-            
-        # Извлекаем аргументы
-        try:
-            tool_args = tool_call.get("args", {})
-            if isinstance(tool_args, str):
-                tool_args = json.loads(tool_args)
-        except Exception as e:
-            print(f"[ERROR] Ошибка при разборе аргументов инструмента: {e}")
-            tool_args = {}
         
         print(f"[LOG] [TOOLS] Выполнение инструмента: {tool_name} с аргументами {tool_args}")
         
