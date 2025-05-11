@@ -38,14 +38,14 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
     elif provider == "local":
         # Используем Ollama в OpenAI-совместимом режиме по HTTP
         try:
-            from langchain.chat_models import ChatOpenAI
+            from langchain_openai import ChatOpenAI  # исправленный импорт
         except ImportError:
-            raise ImportError("[ERROR] langchain не установлена или устаревшая версия; pip install langchain>=0.0.171")
+            raise ImportError("[ERROR] langchain-openai не установлена; pip install langchain-openai>=0.1.1")
         return ChatOpenAI(
             model_name=model,
             temperature=temperature,
             openai_api_base=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434") + "/v1",
-            openai_api_key="",       # Ollama не требует ключа
+            openai_api_key=os.environ.get("OPENAI_API_KEY", "ollama"),  # непустая строка!
         )
     else:
         print(f"[WARNING] Unknown provider '{provider}', using ChatAnthropic")
