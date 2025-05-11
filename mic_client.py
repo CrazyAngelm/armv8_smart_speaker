@@ -78,7 +78,11 @@ def on_wake_word_detected(detected_text):
     """Called when wake word is detected"""
     print(f"[WAKE] Detected wake word: '{detected_text}', now listening for command...")
     play_audio(b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00")  # Short beep sound
-    wake_event.set()
+    wake_detector.stop()                # 1. остановить детектор
+    wake_event.set()                    # 2. дать команду основному циклу
+    threading.Timer(3.0,                # 3. перезапустить через 3 с
+                    wake_detector.start
+                   ).start()
 
 # --- VAD + MIC ---
 async def vad_record_and_send(device=None):

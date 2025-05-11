@@ -17,6 +17,8 @@ class WakeWordDetector:
         self.callback = callback
         self.running = False
         self.initialize_speech()
+        self.min_interval = 2.0      # минимальный интервал между срабатываниями, сек
+        self._last_ts = 0.0          # время последнего триггера
         
     def initialize_speech(self):
         """Initialize the LiveSpeech object for wake word detection"""
@@ -43,9 +45,13 @@ class WakeWordDetector:
                     break
                 detected_text = str(phrase)
                 print(f"[WAKE] Detected: '{detected_text}'")
-                if self.callback:
-                    self.callback(detected_text)
-                    time.sleep(0.5)  # Brief pause after detection
+                
+                now = time.time()
+                if detected_text and now - self._last_ts >= self.min_interval:
+                    self._last_ts = now
+                    if self.callback:
+                        self.callback(detected_text)
+                        time.sleep(0.5)  # Brief pause after detection
         except Exception as e:
             print(f"[ERROR] Wake word detection error: {e}")
             self.running = False
