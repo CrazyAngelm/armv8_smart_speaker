@@ -9,11 +9,11 @@ from langchain_core.language_models import BaseChatModel
 # --- ENVIRONMENT & GLOBALS ---
 load_dotenv()
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "deepseek").lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "claude").lower()
 LLM_MODEL = os.getenv("LLM_MODEL", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307")
 LOCAL_MODEL = os.getenv("LOCAL_MODEL", "gemma3:12b")
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 
 LOCAL_MAX_TOKENS = int(os.getenv("LOCAL_MAX_TOKENS", "128"))    # num_predict
 LOCAL_CONTEXT    = int(os.getenv("LOCAL_CONTEXT",    "512"))   # num_ctx
