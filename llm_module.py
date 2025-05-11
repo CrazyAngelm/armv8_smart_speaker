@@ -36,20 +36,17 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
         except ImportError:
             raise ImportError("[ERROR] langchain-anthropic not installed. Run: pip install langchain-anthropic")
     elif provider == "local":
+        # Используем Ollama в OpenAI-совместимом режиме по HTTP
         try:
-            from langchain_ollama import ChatOllama
-            return ChatOllama(
-                model=model, 
-                temperature=temperature,
-                num_predict=LOCAL_MAX_TOKENS,
-                num_ctx=LOCAL_CONTEXT,
-                num_thread=LOCAL_THREADS,
-                keep_alive=LOCAL_KEEP_ALIVE,
-                top_p=LOCAL_TOP_P,
-                top_k=LOCAL_TOP_K,
-            )
+            from langchain.chat_models import ChatOpenAI
         except ImportError:
-            raise ImportError("[ERROR] langchain-ollama not installed. Run: pip install langchain-ollama")
+            raise ImportError("[ERROR] langchain не установлена или устаревшая версия; pip install langchain>=0.0.171")
+        return ChatOpenAI(
+            model_name=model,
+            temperature=temperature,
+            openai_api_base=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434") + "/v1",
+            openai_api_key="",       # Ollama не требует ключа
+        )
     else:
         print(f"[WARNING] Unknown provider '{provider}', using ChatAnthropic")
         from langchain_anthropic import ChatAnthropic
@@ -105,6 +102,6 @@ class LLMManager:
             return {"provider": "Anthropic Claude", "model": model}
         elif self.provider == "local":
             model = LLM_MODEL or LOCAL_MODEL
-            return {"provider": "Local (Ollama)", "model": model}
+            return {"provider": "Local (Ollama via OpenAI API)", "model": model}
         else:
             return {"provider": self.provider, "model": "unknown"} 

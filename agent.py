@@ -534,7 +534,19 @@ async def cli_loop():
             if hasattr(result, 'values'):
                 for key, value in dict(result).items():
                     if hasattr(value, 'text') and value.text:
-                        response_text = value.text.text
+                        # Проверяем, является ли text объектом TextMsg или строкой
+                        if hasattr(value.text, 'text'):
+                            response_text = value.text.text
+                        elif isinstance(value.text, str):
+                            response_text = value.text
+                        break
+                    # Проверяем, является ли само значение TextMsg
+                    elif isinstance(value, TextMsg):
+                        response_text = value.text
+                        break
+                    # Проверяем, является ли само значение строкой
+                    elif isinstance(value, str):
+                        response_text = value
                         break
             
             if response_text:
@@ -545,6 +557,10 @@ async def cli_loop():
         except (KeyboardInterrupt, EOFError):
             print("\n[CLI] Завершение работы.")
             break
+        except Exception as e:
+            print(f"[ERROR] Ошибка в CLI режиме: {e}")
+            import traceback
+            traceback.print_exc()
 
 if __name__ == "__main__":
     try:
