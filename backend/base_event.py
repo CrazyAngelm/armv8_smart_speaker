@@ -78,4 +78,4 @@ class SetNotificationEvent(BaseEvent):
         self.model.status = 1
         session.commit()
 
-        return 'Напоминание о том' + self.notification_text
+        return 'Ваше напоминание: ' + self.notification_text

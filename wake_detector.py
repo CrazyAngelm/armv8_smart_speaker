@@ -37,6 +37,9 @@ class WakeWordDetector:
     
     def start(self):
         """Start wake word detection in a loop"""
+        # Reinitialize the speech object to ensure a fresh audio stream
+        self.initialize_speech()
+        
         self.running = True
         print(f"[WAKE] Listening for wake word: '{KEYPHRASE}'")
         try:

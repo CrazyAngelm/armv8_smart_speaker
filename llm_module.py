@@ -22,6 +22,8 @@ LOCAL_KEEP_ALIVE = int(os.getenv("LOCAL_KEEP_ALIVE", "-1"))    # keep_alive
 LOCAL_TOP_P      = float(os.getenv("LOCAL_TOP_P",   "0.9"))    # top_p
 LOCAL_TOP_K      = int(os.getenv("LOCAL_TOP_K",       "40"))   # top_k
 
+SHOW_TEXT = os.getenv("SHOW_TEXT", "true").lower() == "true"
+
 # --- PROVIDER INITIALIZATION ---
 def _init_llm(provider: str, temperature: float) -> BaseChatModel:
     provider = provider.lower()
@@ -36,17 +38,20 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
         except ImportError:
             raise ImportError("[ERROR] langchain-anthropic not installed. Run: pip install langchain-anthropic")
     elif provider == "local":
-        # Используем Ollama в OpenAI-совместимом режиме по HTTP
         try:
-            from langchain_openai import ChatOpenAI  # исправленный импорт
+            from langchain_ollama import ChatOllama
+            return ChatOllama(
+                model=model, 
+                temperature=temperature,
+                num_predict=LOCAL_MAX_TOKENS,
+                num_ctx=LOCAL_CONTEXT,
+                num_thread=LOCAL_THREADS,
+                keep_alive=LOCAL_KEEP_ALIVE,
+                top_p=LOCAL_TOP_P,
+                top_k=LOCAL_TOP_K,
+            )
         except ImportError:
-            raise ImportError("[ERROR] langchain-openai не установлена; pip install langchain-openai>=0.1.1")
-        return ChatOpenAI(
-            model_name=model,
-            temperature=temperature,
-            openai_api_base=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434") + "/v1",
-            openai_api_key=os.environ.get("OPENAI_API_KEY", "ollama"),  # непустая строка!
-        )
+            raise ImportError("[ERROR] langchain-ollama not installed. Run: pip install langchain-ollama")
     else:
         print(f"[WARNING] Unknown provider '{provider}', using ChatAnthropic")
         from langchain_anthropic import ChatAnthropic
@@ -59,7 +64,8 @@ class LLMManager:
         self.provider = provider.lower()
         self.temperature = temperature
         self.llm = _init_llm(self.provider, self.temperature)
-        print(f"[INFO] Initialized LLM provider: {self.provider}")
+        if SHOW_TEXT:
+            print(f"[INFO] Initialized LLM provider: {self.provider}")
 
     async def generate_response(self, prompt: str, system_prompt: Optional[str] = None, tools: Optional[List[Dict[str, Any]]] = None) -> str:
         """
@@ -102,6 +108,6 @@ class LLMManager:
             return {"provider": "Anthropic Claude", "model": model}
         elif self.provider == "local":
             model = LLM_MODEL or LOCAL_MODEL
-            return {"provider": "Local (Ollama via OpenAI API)", "model": model}
+            return {"provider": "Local (Ollama)", "model": model}
         else:
             return {"provider": self.provider, "model": "unknown"} 

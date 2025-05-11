@@ -122,6 +122,7 @@ async def tts_client(text: str) -> bytes:
 def get_system_prompt():
     return (
         "Ты — умный голосовой помощник для компании. "
+        "Ты локальная модель, и пишешь ответ в мужском роде и на русском языке. "
         "Отвечай четко, коротко, по делу и профессионально. "
         "Если не знаешь ответ, честно скажи об этом."
         "Если твой ответ можно получить при помощи ОДНОЙ из функций ниже, "
@@ -138,7 +139,9 @@ def get_system_prompt():
 llm_manager = LLMManager()
 # Получаем информацию о текущем провайдере
 llm_info = llm_manager.get_provider_info()
-print(f"[INFO] Using LLM: {llm_info['provider']} ({llm_info['model']})")
+SHOW_TEXT = os.getenv("SHOW_TEXT", "true").lower() == "true"
+if SHOW_TEXT:
+    print(f"[INFO] Using LLM: {llm_info['provider']} ({llm_info['model']})")
 
 async def stt_node(state: AgentState) -> AgentState:
     if state.audio:
@@ -534,19 +537,7 @@ async def cli_loop():
             if hasattr(result, 'values'):
                 for key, value in dict(result).items():
                     if hasattr(value, 'text') and value.text:
-                        # Проверяем, является ли text объектом TextMsg или строкой
-                        if hasattr(value.text, 'text'):
-                            response_text = value.text.text
-                        elif isinstance(value.text, str):
-                            response_text = value.text
-                        break
-                    # Проверяем, является ли само значение TextMsg
-                    elif isinstance(value, TextMsg):
-                        response_text = value.text
-                        break
-                    # Проверяем, является ли само значение строкой
-                    elif isinstance(value, str):
-                        response_text = value
+                        response_text = value.text.text
                         break
             
             if response_text:
@@ -557,10 +548,6 @@ async def cli_loop():
         except (KeyboardInterrupt, EOFError):
             print("\n[CLI] Завершение работы.")
             break
-        except Exception as e:
-            print(f"[ERROR] Ошибка в CLI режиме: {e}")
-            import traceback
-            traceback.print_exc()
 
 if __name__ == "__main__":
     try:

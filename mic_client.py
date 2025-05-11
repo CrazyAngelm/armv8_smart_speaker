@@ -51,27 +51,30 @@ def play_audio(audio_data):
     is_wav = audio_data[:4] == b'RIFF' and audio_data[8:12] == b'WAVE'
     suffix = '.wav' if is_wav else '.ogg'
     
-    temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-    try:
-        temp_file.write(audio_data)
-        temp_file.close()
-        
+    # Используем tempfile.NamedTemporaryFile для создания уникальных имен файлов
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
         try:
-            data, samplerate = sf.read(temp_file.name, dtype='float32')
-            print(f"[INFO] Воспроизведение аудио: {len(data)} сэмплов, {samplerate} Гц")
-            sd.play(data, samplerate)
-            sd.wait()
-        except Exception as e:
-            print(f"[ERROR] Ошибка воспроизведения аудио: {e}")
+            temp_file.write(audio_data)
+            temp_file.close()
             
-    except Exception as e:
-        print(f"[ERROR] Не удалось воспроизвести ответ: {e}")
-    finally:
-        try:
-            if os.path.exists(temp_file.name):
-                os.remove(temp_file.name)
+            try:
+                data, samplerate = sf.read(temp_file.name, dtype='float32')
+                print(f"[INFO] Воспроизведение аудио: {len(data)} сэмплов, {samplerate} Гц")
+                sd.play(data, samplerate)
+                sd.wait()
+            except Exception as e:
+                print(f"[ERROR] Ошибка воспроизведения аудио: {e}")
+                
         except Exception as e:
-            print(f"[WARNING] Не удалось удалить временный файл: {e}")
+            print(f"[ERROR] Не удалось воспроизвести ответ: {e}")
+        finally:
+            try:
+                if os.path.exists(temp_file.name):
+                    # Небольшая пауза перед удалением чтобы убедиться, что файл больше не используется
+                    time.sleep(0.1)
+                    os.remove(temp_file.name)
+            except Exception as e:
+                print(f"[WARNING] Не удалось удалить временный файл: {e}")
 
 # --- WAKE WORD HANDLING ---
 def on_wake_word_detected(detected_text):

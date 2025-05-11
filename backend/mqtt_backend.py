@@ -89,7 +89,7 @@ def set_time_handler(nlu_payload, client):
     timer = SetTimerEvent(timestamp=event_timestamp, session=session)
     events.append(timer)
     
-    response_text = "Поставила таймер"
+    response_text = "Поставил таймер"
     client.publish("hermes/tts/say", json.dumps({"text": response_text}))
     
     # Отправляем ответ в топик запроса, если указан request_id
@@ -157,7 +157,7 @@ def set_notification_handler(nlu_payload, client):
 
     events.append(notifier)
 
-    response_text = "Поставила напоминание"
+    response_text = "Поставил напоминание"
     client.publish("hermes/tts/say", json.dumps({"text": response_text}))
     
     # Отправляем ответ в топик запроса, если указан request_id
@@ -240,9 +240,14 @@ def initiate_call_handler(nlu_payload, client):
     else:
         # Если найдено несколько контактов, используем первый
         result = results[0]
-        response_text = f"Контакт {result.name} найден, звоню {result.phone_number}"
+        formatted_number = ' '.join(str(result.phone_number))
+
+        response_text = f"Контакт {result.name} найден, звоню {formatted_number}"
         print(response_text)
-        client.publish("hermes/tts/say", json.dumps({"text": f"Контакт найден, звоню {result.phone_number}"}))
+
+        client.publish("hermes/tts/say", json.dumps({
+            "text": f"Контакт найден, звоню {formatted_number}"
+        }))
     
     # Отправляем ответ в топик запроса, если указан request_id
     if "request_id" in nlu_payload:
@@ -406,17 +411,24 @@ def synthesize_speech(text):
                     
                     if isinstance(audio_data, bytes):
                         print(f"[TTS] Получены аудио данные: {len(audio_data)} байт")
-                        # Сохраняем во временный файл
-                        temp_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "temp_speech.wav")
-                        with open(temp_file, "wb") as f:
-                            f.write(audio_data)
+                        # Используем уникальное временное имя файла вместо фиксированного
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp:
+                            temp_file = temp.name
+                            temp.write(audio_data)
                         
-                        # Воспроизводим
-                        play_sound_file(temp_file)
-                        
-                        # Удаляем временный файл
-                        if os.path.exists(temp_file):
-                            os.remove(temp_file)
+                        try:
+                            # Воспроизводим
+                            play_sound_file(temp_file)
+                        finally:
+                            # Удаляем временный файл в блоке finally чтобы обеспечить очистку даже при ошибках
+                            try:
+                                if os.path.exists(temp_file):
+                                    # Даем небольшую паузу перед удалением, чтобы player успел освободить файл
+                                    time.sleep(0.2)
+                                    os.remove(temp_file)
+                            except Exception as e:
+                                print(f"[TTS] Ошибка при удалении временного файла: {e}")
                     else:
                         print(f"[TTS] Ошибка: Получен неправильный формат ответа")
             except Exception as e:

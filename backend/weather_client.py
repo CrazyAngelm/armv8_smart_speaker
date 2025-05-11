@@ -11,7 +11,7 @@ class WeatherAPIClient:
         
         try:
             response = requests.get(
-                url=f'{self.base_url}?key={self.token}&q=Kazan&aqi=no',
+                url=f'{self.base_url}?key={self.token}&q=Казань&aqi=no',
                 timeout=5,
             ).json()
 

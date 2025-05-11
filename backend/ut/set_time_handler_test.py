@@ -83,7 +83,7 @@ def test_set_time_handler(mock_client, nlu_payload_set_timer):
     expected_time = datetime.now() + timedelta(seconds=2)
     assert abs((events[0].timestamp - expected_time).total_seconds()) < 1
 
-    mock_client.publish.assert_called_once_with("hermes/tts/say", json.dumps({"text": "Поставила таймер"}))
+    mock_client.publish.assert_called_once_with("hermes/tts/say", json.dumps({"text": "Поставил таймер"}))
 
 
 def test_get_time_handler(mock_client):
@@ -109,7 +109,7 @@ def test_set_notification_handler(mock_client, nlu_payload_set_notification):
     expected_time = datetime.now() + timedelta(seconds=2)
     assert abs((events[0].timestamp - expected_time).total_seconds()) < 1
 
-    mock_client.publish.assert_called_once_with("hermes/tts/say", json.dumps({"text": "Поставила напоминание"}))
+    mock_client.publish.assert_called_once_with("hermes/tts/say", json.dumps({"text": "Поставил напоминание"}))
 
 
 def test_event_checker(mock_client, event_checker_thread):
