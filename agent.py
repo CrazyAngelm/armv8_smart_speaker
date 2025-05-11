@@ -536,8 +536,20 @@ async def cli_loop():
             response_text = None
             if hasattr(result, 'values'):
                 for key, value in dict(result).items():
+                    # Проверяем, является ли значение TextMsg объектом
                     if hasattr(value, 'text') and value.text:
-                        response_text = value.text.text
+                        if isinstance(value.text, TextMsg):
+                            response_text = value.text.text
+                        elif isinstance(value.text, str):
+                            response_text = value.text
+                        break
+                    # Если значение строка, используем напрямую
+                    elif isinstance(value, str):
+                        response_text = value
+                        break
+                    # Проверяем, является ли само значение TextMsg
+                    elif isinstance(value, TextMsg):
+                        response_text = value.text
                         break
             
             if response_text:

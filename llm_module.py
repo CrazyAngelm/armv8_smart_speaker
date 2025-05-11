@@ -12,6 +12,7 @@ load_dotenv()
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "deepseek").lower()
 LLM_MODEL = os.getenv("LLM_MODEL", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 LOCAL_MODEL = os.getenv("LOCAL_MODEL", "gemma3:12b")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
 
@@ -29,6 +30,7 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
     provider = provider.lower()
     model = LLM_MODEL or {
         "claude": CLAUDE_MODEL,
+        "deepseek": DEEPSEEK_MODEL,
         "local": LOCAL_MODEL
     }.get(provider, CLAUDE_MODEL)
     if provider == "claude":
@@ -37,6 +39,12 @@ def _init_llm(provider: str, temperature: float) -> BaseChatModel:
             return ChatAnthropic(model=model, temperature=temperature)
         except ImportError:
             raise ImportError("[ERROR] langchain-anthropic not installed. Run: pip install langchain-anthropic")
+    elif provider == "deepseek":
+        try:
+            from langchain_deepseek import ChatDeepSeek
+            return ChatDeepSeek(model=model, temperature=temperature)
+        except ImportError:
+            raise ImportError("[ERROR] langchain-deepseek not installed. Run: pip install langchain-deepseek")
     elif provider == "local":
         try:
             from langchain_ollama import ChatOllama
@@ -106,6 +114,9 @@ class LLMManager:
         if self.provider == "claude":
             model = LLM_MODEL or CLAUDE_MODEL
             return {"provider": "Anthropic Claude", "model": model}
+        elif self.provider == "deepseek":
+            model = LLM_MODEL or DEEPSEEK_MODEL
+            return {"provider": "DeepSeek", "model": model}
         elif self.provider == "local":
             model = LLM_MODEL or LOCAL_MODEL
             return {"provider": "Local (Ollama)", "model": model}
