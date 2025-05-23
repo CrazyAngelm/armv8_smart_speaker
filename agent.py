@@ -9,7 +9,6 @@ import json
 from mqtt_tools import tools, execute_tool, init_mqtt
 import re
 import hashlib
-import socket
 
 load_dotenv()
 init_mqtt()
