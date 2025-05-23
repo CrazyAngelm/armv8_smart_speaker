@@ -2,6 +2,7 @@ import os
 import time
 from pocketsphinx import LiveSpeech, get_model_path
 from dotenv import load_dotenv
+import sounddevice as sd
 
 load_dotenv()
 
@@ -16,10 +17,26 @@ class WakeWordDetector:
     def __init__(self, callback=None):
         self.callback = callback
         self.running = False
+        self.device_index = self.get_input_device_index(os.getenv("WAKEWORD_DEVICE_HINT"))
         self.initialize_speech()
         self.min_interval = 2.0      # минимальный интервал между срабатываниями, сек
         self._last_ts = 0.0          # время последнего триггера
         
+    def get_input_device_index(self, name_hint=None):
+        """Автоматически выбирает индекс устройства ввода по имени или первый доступный"""
+        try:
+            devices = sd.query_devices()
+            for idx, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0:
+                    if name_hint is None or name_hint.lower() in dev['name'].lower():
+                        print(f"[WAKE] Используется устройство ввода: {dev['name']} (index={idx})")
+                        return idx
+            print("[WAKE] Не найдено подходящее устройство ввода, используется устройство по умолчанию")
+            return None
+        except Exception as e:
+            print(f"[WAKE] Ошибка при поиске устройств ввода: {e}")
+            return None
+    
     def initialize_speech(self):
         """Initialize the LiveSpeech object for wake word detection"""
         try:
@@ -28,7 +45,8 @@ class WakeWordDetector:
                 keyphrase=KEYPHRASE,
                 kws_threshold=KWS_THRESHOLD,
                 hmm=os.path.join(MODEL_DIR, "en-us") if "en-us" in os.listdir(MODEL_DIR) else MODEL_DIR,
-                dic=os.path.join(MODEL_DIR, "cmudict-en-us.dict")
+                dic=os.path.join(MODEL_DIR, "cmudict-en-us.dict"),
+                device=self.device_index
             )
             print(f"[WAKE] Initialized PocketSphinx wake word detector for '{KEYPHRASE}'")
         except Exception as e:
