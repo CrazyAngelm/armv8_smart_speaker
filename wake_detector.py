@@ -56,7 +56,7 @@ class WakeWordDetector:
                 kws_threshold=KWS_THRESHOLD,
                 hmm=os.path.join(MODEL_DIR, "en-us") if "en-us" in os.listdir(MODEL_DIR) else MODEL_DIR,
                 dic=os.path.join(MODEL_DIR, "cmudict-en-us.dict"),
-                device=self.device_index
+                #device=self.device_index
             )
             print(f"[WAKE] Initialized PocketSphinx wake word detector for '{KEYPHRASE}'")
         except Exception as e:
