@@ -23,15 +23,25 @@ class WakeWordDetector:
         self._last_ts = 0.0          # время последнего триггера
         
     def get_input_device_index(self, name_hint=None):
-        """Автоматически выбирает индекс устройства ввода по имени или первый доступный"""
+        """Автоматически выбирает индекс устройства ввода по имени, затем первое с входом, затем pulse/default"""
         try:
             devices = sd.query_devices()
+            # 1. Поиск по имени
+            for idx, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0 and name_hint and name_hint.lower() in dev['name'].lower():
+                    print(f"[WAKE] Используется устройство ввода по имени: {dev['name']} (index={idx})")
+                    return idx
+            # 2. Первый input-устройство
             for idx, dev in enumerate(devices):
                 if dev['max_input_channels'] > 0:
-                    if name_hint is None or name_hint.lower() in dev['name'].lower():
-                        print(f"[WAKE] Используется устройство ввода: {dev['name']} (index={idx})")
-                        return idx
-            print("[WAKE] Не найдено подходящее устройство ввода, используется устройство по умолчанию")
+                    print(f"[WAKE] Используется первое доступное устройство ввода: {dev['name']} (index={idx})")
+                    return idx
+            # 3. Явно пробуем pulse или default
+            for idx, dev in enumerate(devices):
+                if dev['name'].lower() in ['pulse', 'default']:
+                    print(f"[WAKE] Используется fallback устройство: {dev['name']} (index={idx})")
+                    return idx
+            print("[WAKE] Не найдено ни одного устройства ввода!")
             return None
         except Exception as e:
             print(f"[WAKE] Ошибка при поиске устройств ввода: {e}")
