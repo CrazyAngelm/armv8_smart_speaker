@@ -1,6 +1,7 @@
+# hybrid_agent.py
 import asyncio, os, websockets
 from dataclasses import dataclass
-from typing import Any, Literal, Optional, Dict
+from typing import Any, Literal, Optional, Dict, List
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from llm_module import LLMManager
@@ -10,14 +11,28 @@ from mqtt_tools import tools, execute_tool, init_mqtt
 import re
 import hashlib
 
+# Импортируем оптимизированную систему парсинга
+from improved_tool_parser import OptimizedToolParser, ToolCall
+
 load_dotenv()
 init_mqtt()
 
-# Мониторинг производительности
+# Создаем глобальный экземпляр парсера
+tool_parser = OptimizedToolParser()
+
+# Настройки производительности
+PERFORMANCE_MODE = os.getenv("PERFORMANCE_MODE", "balanced").lower()  # fast, balanced, accurate
+USE_LLM_FALLBACK = os.getenv("USE_LLM_FALLBACK", "true").lower() == "true"
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.4"))
+
+# Устанавливаем порог уверенности
+tool_parser.set_confidence_threshold(CONFIDENCE_THRESHOLD)
+
 class PerformanceMonitor:
     def __init__(self):
         self.timings = {}
         self.enabled = os.getenv("PERF_MONITOR", "true").lower() == "true"
+        self.stats = {"total_requests": 0, "tool_calls": 0, "llm_calls": 0, "direct_parse": 0}
     
     def start(self, phase: str):
         if self.enabled:
@@ -28,10 +43,16 @@ class PerformanceMonitor:
             duration = time.perf_counter() - self.timings[f"{phase}_start"]
             print(f"[PERF] {phase}: {duration:.2f}s")
             return duration
+    
+    def log_stat(self, stat_name: str):
+        if stat_name in self.stats:
+            self.stats[stat_name] += 1
+    
+    def get_stats(self):
+        return self.stats.copy()
 
 perf = PerformanceMonitor()
 
-# Типы сообщений
 @dataclass
 class AudioMsg:
     raw: bytes
@@ -47,6 +68,9 @@ class AgentState:
     text: Optional[TextMsg] = None
     tool_calls: Optional[list] = None
     tool_results: Optional[Dict[str, Any]] = None
+    # Новые поля для отслеживания
+    parse_method: Optional[str] = None  # direct, llm_assisted, llm_only
+    confidence: Optional[float] = None
 
 # WebSocket настройки
 STT_WS_HOST = os.getenv("STT_WS_HOST", "localhost") 
@@ -56,7 +80,25 @@ TTS_WS_PORT = int(os.getenv("TTS_WS_PORT", 8777))
 
 processing_lock = asyncio.Lock()
 
-# STT клиент
+# Кэш для LLM
+llm_manager = LLMManager()
+llm_cache = {}
+
+def get_cache_key(prompt: str, system_prompt: str) -> str:
+    return hashlib.md5(f"{system_prompt}|{prompt}".encode()).hexdigest()
+
+def get_cached_response(prompt: str, system_prompt: str) -> Optional[str]:
+    cache_key = get_cache_key(prompt, system_prompt)
+    return llm_cache.get(cache_key)
+
+def cache_response(prompt: str, system_prompt: str, response: str):
+    cache_key = get_cache_key(prompt, system_prompt)
+    llm_cache[cache_key] = response
+    if len(llm_cache) > 50:  # Уменьшили размер кэша для экономии памяти
+        oldest_key = next(iter(llm_cache))
+        del llm_cache[oldest_key]
+
+# STT и TTS клиенты (без изменений)
 async def stt_vosk(audio: AudioMsg) -> str:
     print(f"[LOG] [STT] Отправка аудио ({len(audio.raw)} байт)")
     try:
@@ -70,14 +112,11 @@ async def stt_vosk(audio: AudioMsg) -> str:
         print(f"[ERROR] STT error: {e}")
         raise
 
-# Извлечение текста для TTS
 def extract_tts_text(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
-    # Удаляем <think>...</think>
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
     
-    # Парсим JSON если есть
     if text.startswith('[') or text.startswith('{'):
         try:
             data = json.loads(text)
@@ -89,7 +128,6 @@ def extract_tts_text(text: str) -> str:
             pass
     return text.strip()
 
-# TTS клиент
 async def tts_client(text: str) -> bytes:
     text = extract_tts_text(text)
     print(f"[LOG] [TTS] Синтез: {text[:100]}...")
@@ -104,60 +142,61 @@ async def tts_client(text: str) -> bytes:
         print(f"[ERROR] TTS error: {e}")
         raise
 
+# Гибридная функция для LLM-помощи в парсинге
+async def llm_assisted_parse(text: str) -> Optional[List[ToolCall]]:
+    """Использует LLM для помощи в парсинге неоднозначных команд"""
+    system_prompt = tool_parser.get_simple_system_prompt()
+    
+    # Проверяем кэш
+    cached = get_cached_response(text, system_prompt)
+    if cached:
+        return _parse_llm_response(cached, text)
+    
+    try:
+        print(f"[DEBUG] LLM-помощь для парсинга: '{text}'")
+        perf.log_stat("llm_calls")
+        
+        result = await llm_manager.llm.ainvoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ])
+        
+        content = result.content if hasattr(result, 'content') else str(result)
+        content = content.strip().upper()
+        
+        print(f"[DEBUG] LLM ответ: {content}")
+        cache_response(text, system_prompt, content)
+        
+        return _parse_llm_response(content, text)
+        
+    except Exception as e:
+        print(f"[ERROR] LLM-помощь failed: {e}")
+        return None
 
-# Получаем системный промпт
-def get_system_prompt():
-    return (
-        "Ты — умный голосовой помощник для компании. "
-        "Ты локальная модель, и пишешь ответ в мужском роде и на русском языке. "
-        "Отвечай четко, коротко, по делу и профессионально. "
-        "Если не знаешь ответ, честно скажи об этом.\n\n"
-        "ВАЖНО: Если пользователь просит выполнить одно из следующих действий, "
-        "ОБЯЗАТЕЛЬНО используй соответствующую функцию вместо собственного ответа:\n"
-        "- Узнать время → вызови get_time\n"
-        "- Поставить таймер → вызови set_timer\n"
-        "- Поставить напоминание/уведомление → вызови set_notification\n"
-        "- Узнать погоду → вызови get_weather\n"
-        "- Позвонить кому-то → вызови call_contact\n\n"
-        "Функции вернут готовый ответ для пользователя, тебе НЕ нужно "
-        "добавлять к нему свои комментарии или пояснения.\n\n"
-        "Для всех остальных вопросов отвечай самостоятельно."
-    )
-
-llm_manager = LLMManager()
-llm_cache = {}
-
-def get_cache_key(prompt: str, system_prompt: str) -> str:
-    return hashlib.md5(f"{system_prompt}|{prompt}".encode()).hexdigest()
-
-def get_cached_response(prompt: str, system_prompt: str) -> Optional[str]:
-    cache_key = get_cache_key(prompt, system_prompt)
-    return llm_cache.get(cache_key)
-
-def cache_response(prompt: str, system_prompt: str, response: str):
-    cache_key = get_cache_key(prompt, system_prompt)
-    llm_cache[cache_key] = response
-    if len(llm_cache) > 100:
-        oldest_key = next(iter(llm_cache))
-        del llm_cache[oldest_key]
-
-def get_system_prompt():
-    return ("Ты — умный голосовой помощник. Отвечай кратко и по делу. "
-            "ВСЕГДА используй доступные функции для получения актуальной информации: "
-            "- get_time() для времени "
-            "- set_timer() для таймеров "
-            "- set_notification() для напоминаний "
-            "- get_weather() для погоды "
-            "- call_contact() для звонков. "
-            "НЕ спрашивай разрешения - сразу вызывай нужную функцию!")
+def _parse_llm_response(llm_response: str, original_text: str) -> Optional[List[ToolCall]]:
+    """Парсит ответ LLM и создает ToolCall"""
+    llm_response = llm_response.strip().upper()
+    
+    tool_mapping = {
+        "ВРЕМЯ": "get_time",
+        "ПОГОДА": "get_weather", 
+        "ТАЙМЕР": "set_timer",
+        "НАПОМИНАНИЕ": "set_notification",
+        "ЗВОНОК": "call_contact"
+    }
+    
+    if llm_response in tool_mapping:
+        tool_name = tool_mapping[llm_response]
+        args = tool_parser._extract_args(tool_name, original_text)
+        return [ToolCall(name=tool_name, args=args, confidence=0.7)]
+    
+    return None
 
 # Предзагрузка моделей
 async def preload_models():
-    """Предзагружает модели для быстрого первого отклика"""
     print("[INFO] Предзагрузка моделей...")
     
     try:
-        # Тест STT
         test_audio = AudioMsg(b'\x00' * 1600, sr=16000)
         await stt_vosk(test_audio)
         print("[INFO] STT готов")
@@ -165,7 +204,6 @@ async def preload_models():
         print("[WARNING] STT недоступен")
     
     try:
-        # Тест TTS
         await tts_client("Тест")
         print("[INFO] TTS готов")
     except:
@@ -190,14 +228,72 @@ async def stt_node(state: AgentState) -> AgentState:
     perf.end("stt")
     return state
 
-async def llm_node(state: AgentState) -> AgentState:
-    perf.start("llm")
+async def intelligent_parsing_node(state: AgentState) -> AgentState:
+    """Умный узел парсинга с гибридным подходом"""
+    perf.start("parsing")
+    perf.log_stat("total_requests")
+    
     if not state.text:
+        perf.end("parsing")
+        return state
+    
+    txt = state.text.text
+    print(f"[DEBUG] Интеллектуальный парсинг: '{txt}'")
+    
+    # 1. Пробуем прямой парсинг
+    direct_result = tool_parser.parse_text_for_tools(txt, use_llm_fallback=False)
+    
+    if direct_result and direct_result[0].confidence >= CONFIDENCE_THRESHOLD:
+        print(f"[DEBUG] Прямой парсинг успешен: {direct_result[0].name} (conf: {direct_result[0].confidence:.2f})")
+        state.tool_calls = [_convert_to_tool_call_dict(tc) for tc in direct_result]
+        state.parse_method = "direct"
+        state.confidence = direct_result[0].confidence
+        perf.log_stat("direct_parse")
+        perf.end("parsing")
+        return state
+    
+    # 2. Если прямой парсинг неуспешен и разрешен LLM fallback
+    if USE_LLM_FALLBACK and PERFORMANCE_MODE != "fast":
+        llm_result = await llm_assisted_parse(txt)
+        
+        if llm_result and llm_result[0].confidence >= CONFIDENCE_THRESHOLD:
+            print(f"[DEBUG] LLM-помощь успешна: {llm_result[0].name} (conf: {llm_result[0].confidence:.2f})")
+            state.tool_calls = [_convert_to_tool_call_dict(tc) for tc in llm_result]
+            state.parse_method = "llm_assisted"
+            state.confidence = llm_result[0].confidence
+            perf.end("parsing")
+            return state
+    
+    # 3. Если ничего не сработало, используем обычный LLM для генерации ответа
+    if PERFORMANCE_MODE == "accurate":
+        state.parse_method = "llm_only"
+        # Переходим к обычной генерации LLM
+    
+    perf.end("parsing")
+    return state
+
+def _convert_to_tool_call_dict(tc: ToolCall) -> Dict[str, Any]:
+    """Конвертирует ToolCall в формат для tools_node"""
+    return {
+        "name": tc.name,
+        "args": tc.args,
+        "id": f"tool_{tc.name}_{int(time.time())}"
+    }
+
+async def llm_node(state: AgentState) -> AgentState:
+    """Упрощенный LLM узел для случаев когда парсинг не сработал"""
+    perf.start("llm")
+    
+    if not state.text:  # Убираем проверку на tool_calls
         perf.end("llm")
         return state
     
     txt = state.text.text
-    system_prompt = get_system_prompt()
+    
+    # Простой системный промпт для разговора
+    system_prompt = """Ты дружелюбный голосовой помощник. 
+Отвечай кратко и естественно на русском языке.
+Если не понимаешь команду, честно скажи об этом и предложи помощь."""
     
     # Проверяем кэш
     cached = get_cached_response(txt, system_prompt)
@@ -207,202 +303,40 @@ async def llm_node(state: AgentState) -> AgentState:
         return state
     
     try:
-        print(f"[DEBUG] LLM узел: проверка поддержки bind_tools")
-        if hasattr(llm_manager.llm, 'bind_tools'):
-            print(f"[DEBUG] bind_tools поддерживается, привязываем {len(tools)} инструментов")
-            llm_with_tools = llm_manager.llm.bind_tools(tools)
-            result = await llm_with_tools.ainvoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": txt}
-            ])
-            
-            print(f"[DEBUG] Результат LLM: type={type(result)}")
-            print(f"[DEBUG] hasattr tool_calls: {hasattr(result, 'tool_calls')}")
-            
-            if hasattr(result, 'tool_calls') and result.tool_calls:
-                print(f"[DEBUG] Найдено {len(result.tool_calls)} tool_calls: {result.tool_calls}")
-                state.tool_calls = result.tool_calls
-                perf.end("llm")
-                return state
-            else:
-                print(f"[DEBUG] tool_calls не найдены или пусты")
-                # Попробуем парсить текст для поиска упоминаний функций
-                content = result.content if hasattr(result, 'content') else str(result)
-                print(f"[DEBUG] Контент ответа: {content}")
-                
-                # Ищем упоминания функций в тексте
-                parsed_tools = parse_tool_mentions(content)
-                if parsed_tools:
-                    print(f"[DEBUG] Найдены упоминания инструментов в тексте: {parsed_tools}")
-                    state.tool_calls = parsed_tools
-                    perf.end("llm")
-                    return state
-        else:
-            print(f"[DEBUG] bind_tools НЕ поддерживается")
-            result = await llm_manager.llm.ainvoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": txt}
-            ])
-            content = result.content if hasattr(result, 'content') else str(result)
-            
-            # Ищем упоминания функций в тексте
-            parsed_tools = parse_tool_mentions(content)
-            if parsed_tools:
-                print(f"[DEBUG] Найдены упоминания инструментов в тексте: {parsed_tools}")
-                state.tool_calls = parsed_tools
-                perf.end("llm")
-                return state
+        print(f"[DEBUG] LLM генерация ответа для: '{txt}'")
+        perf.log_stat("llm_calls")
         
-        reply = result.content if hasattr(result, 'content') else str(result)
-        cache_response(txt, system_prompt, reply)
-        state.text = TextMsg(reply)
+        result = await llm_manager.llm.ainvoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": txt}
+        ])
+        
+        content = result.content if hasattr(result, 'content') else str(result)
+        cache_response(txt, system_prompt, content)
+        state.text = TextMsg(content)
         
     except Exception as e:
         print(f"[ERROR] LLM error: {e}")
-        import traceback
-        traceback.print_exc()
         state.text = TextMsg("Извините, произошла ошибка.")
     
     perf.end("llm")
     return state
 
-def parse_tool_mentions(content: str) -> Optional[list]:
-    """Парсит текст для поиска упоминаний функций и создает tool_calls"""
-    import re
-    
-    # Паттерны для поиска упоминаний функций
-    patterns = {
-        "get_time": r"(?:время|сколько времени|который час)",
-        "get_weather": r"(?:погода|weather|температура|градус)",
-        "set_timer": r"(?:таймер|timer|поставь таймер|установи таймер)",
-        "set_notification": r"(?:напомни|напоминание|notification|reminder)",
-        "call_contact": r"(?:позвони|звони|call|вызов)"
-    }
-    
-    tool_calls = []
-    
-    for tool_name, pattern in patterns.items():
-        if re.search(pattern, content.lower()):
-            print(f"[DEBUG] Найдено упоминание {tool_name} в тексте")
-            
-            # Создаем базовые аргументы для разных функций
-            args = {}
-            if tool_name == "set_timer":
-                # Ищем числа для таймера
-                minutes_match = re.search(r"(\d+)\s*мин", content)
-                seconds_match = re.search(r"(\d+)\s*сек", content)
-                hours_match = re.search(r"(\d+)\s*час", content)
-                
-                if minutes_match:
-                    args["minutes"] = int(minutes_match.group(1))
-                if seconds_match:
-                    args["seconds"] = int(seconds_match.group(1))
-                if hours_match:
-                    args["hours"] = int(hours_match.group(1))
-                    
-                # Если не нашли конкретное время, ставим 1 минуту по умолчанию
-                if not args:
-                    args["minutes"] = 1
-                    
-            elif tool_name == "set_notification":
-                # Ищем текст напоминания
-                reminder_match = re.search(r"напомни.*?(?:о том|что)\s+(.+)", content, re.IGNORECASE)
-                if reminder_match:
-                    args["text"] = reminder_match.group(1).strip()
-                else:
-                    args["text"] = "Напоминание"
-                    
-                # Ищем время
-                minutes_match = re.search(r"(\d+)\s*мин", content)
-                if minutes_match:
-                    args["minutes"] = int(minutes_match.group(1))
-                else:
-                    args["minutes"] = 5  # По умолчанию 5 минут
-                    
-            elif tool_name == "call_contact":
-                # Ищем имя контакта
-                contact_match = re.search(r"позвони\s+(.+)", content, re.IGNORECASE)
-                if contact_match:
-                    args["contact_name"] = contact_match.group(1).strip()
-                else:
-                    args["contact_name"] = "неизвестный контакт"
-            
-            tool_call = {
-                "name": tool_name,
-                "args": args,
-                "id": f"tool_{tool_name}_{int(time.time())}"
-            }
-            tool_calls.append(tool_call)
-            break  # Берем только первую найденную функцию
-    
-    return tool_calls if tool_calls else None
-
-# Streaming LLM узел
-async def llm_streaming_node(state: AgentState) -> AgentState:
-    perf.start("llm_streaming")
-    if not state.text:
-        perf.end("llm_streaming")
-        return state
-    
-    txt = state.text.text
-    system_prompt = get_system_prompt()
-    
-    # Проверяем кэш
-    cached = get_cached_response(txt, system_prompt)
-    if cached:
-        state.text = TextMsg(cached)
-        perf.end("llm_streaming")
-        return state
-    
-    try:
-        # Используем потоковую генерацию если доступна
-        if hasattr(llm_manager, 'stream_response_with_early_synthesis'):
-            accumulated_response = ""
-            async for text_chunk, should_start_tts in llm_manager.stream_response_with_early_synthesis(
-                txt, system_prompt, min_chars_for_tts=30
-            ):
-                accumulated_response += text_chunk
-                # Можно добавить логику раннего TTS здесь если нужно
-            
-            # Проверяем упоминания инструментов в накопленном тексте
-            parsed_tools = parse_tool_mentions(accumulated_response)
-            if parsed_tools:
-                print(f"[DEBUG] В streaming найдены инструменты: {parsed_tools}")
-                state.tool_calls = parsed_tools
-                perf.end("llm_streaming")
-                return state
-            
-            cache_response(txt, system_prompt, accumulated_response)
-            state.text = TextMsg(accumulated_response)
-        else:
-            # Fallback к обычному LLM
-            return await llm_node(state)
-        
-    except Exception as e:
-        print(f"[ERROR] LLM streaming error: {e}")
-        import traceback
-        traceback.print_exc()
-        # Fallback к обычному LLM
-        return await llm_node(state)
-    
-    perf.end("llm_streaming")
-    return state
-
+# Остальные узлы (без изменений)
 async def tools_node(state: AgentState) -> AgentState:
     if not state.tool_calls:
         return state
     
     perf.start("tools")
+    perf.log_stat("tool_calls")
     print(f"[LOG] [TOOLS] Выполнение {len(state.tool_calls)} инструментов")
     
     async def execute_tool_async(tool_call):
-        # Обрабатываем разные форматы tool_call
         if isinstance(tool_call, dict):
             tool_name = tool_call.get("name")
             tool_args = tool_call.get("args", {})
             tool_id = tool_call.get("id", f"tool_{tool_name}_{int(time.time())}")
         else:
-            # Если это объект с атрибутами (стандартный формат LangChain)
             tool_name = getattr(tool_call, "name", None)
             tool_args = getattr(tool_call, "args", {})
             tool_id = getattr(tool_call, "id", f"tool_{tool_name}_{int(time.time())}")
@@ -461,42 +395,42 @@ async def tts_node(state: AgentState) -> AgentState:
     return state
 
 # Маршрутизаторы
-def tools_router(state: AgentState) -> Literal["tools", "tool_results_processor", "tts"]:
+def parsing_router(state: AgentState) -> Literal["tools", "llm", "tts"]:
+    """Маршрутизатор после парсинга"""
     if state.tool_calls:
         return "tools"
-    elif state.tool_results:
-        return "tool_results_processor"
+    elif state.text:
+        # Если есть текст но нет инструментов, отправляем к LLM для генерации ответа
+        return "llm"
     return "tts"
 
-def llm_type_router(state: AgentState) -> Literal["llm_streaming", "llm"]:
-    """Выбирает streaming или обычный LLM"""
-    if not state.text:
-        return "llm"
-    
-    use_streaming = os.getenv("LLM_STREAMING", "true").lower() == "true"
-    return "llm_streaming" if use_streaming else "llm"
+def tools_router(state: AgentState) -> Literal["tool_results_processor", "tts"]:
+    if state.tool_results:
+        return "tool_results_processor"
+    return "tts"
 
 # Построение графа
 workflow = StateGraph(AgentState)
 workflow.add_node("stt", stt_node)
+workflow.add_node("intelligent_parsing", intelligent_parsing_node)
 workflow.add_node("llm", llm_node)
-workflow.add_node("llm_streaming", llm_streaming_node)
 workflow.add_node("tools", tools_node)
 workflow.add_node("tool_results_processor", tool_results_processor)
 workflow.add_node("tts", tts_node)
 
 workflow.add_edge(START, "stt")
-workflow.add_conditional_edges("stt", lambda state: llm_type_router(state) if state.text else "tts", 
-                               {"llm_streaming": "llm_streaming", "llm": "llm", "tts": "tts"})
-workflow.add_conditional_edges("llm", tools_router, {"tools": "tools", "tool_results_processor": "tool_results_processor", "tts": "tts"})
-workflow.add_conditional_edges("llm_streaming", tools_router, {"tools": "tools", "tool_results_processor": "tool_results_processor", "tts": "tts"})
-workflow.add_edge("tools", "tool_results_processor")
+workflow.add_edge("stt", "intelligent_parsing")
+workflow.add_conditional_edges("intelligent_parsing", parsing_router, 
+                               {"tools": "tools", "llm": "llm", "tts": "tts"})
+workflow.add_edge("llm", "tts")
+workflow.add_conditional_edges("tools", tools_router, 
+                               {"tool_results_processor": "tool_results_processor", "tts": "tts"})
 workflow.add_edge("tool_results_processor", "tts")
 workflow.add_edge("tts", END)
 
 app = workflow.compile()
 
-# WebSocket сервер
+# WebSocket сервер и остальной код остается без изменений...
 HOST, PORT = os.getenv("MAGUS_WS_HOST", "0.0.0.0"), int(os.getenv("MAGUS_WS_PORT", 8765))
 
 def split_audio_data(audio_data: bytes, max_chunk_size: int = 1024 * 1024) -> list:
@@ -524,7 +458,12 @@ async def handle(ws):
                     try:
                         result = await app.ainvoke(state)
                         
-                        # Извлекаем аудио результат
+                        # Логируем статистику
+                        if hasattr(result.get('intelligent_parsing'), 'parse_method'):
+                            method = result['intelligent_parsing'].parse_method
+                            confidence = result['intelligent_parsing'].confidence
+                            print(f"[STATS] Метод: {method}, Уверенность: {confidence:.2f}")
+                        
                         audio_result = None
                         for value in dict(result).values():
                             if hasattr(value, 'audio') and value.audio:
@@ -532,7 +471,6 @@ async def handle(ws):
                                 break
                         
                         if not audio_result:
-                            # Синтезируем из текста
                             for value in dict(result).values():
                                 text_to_speak = None
                                 if hasattr(value, 'text') and value.text:
@@ -547,7 +485,6 @@ async def handle(ws):
                                     audio_result = AudioMsg(audio_bytes, sr=48000)
                                     break
                         
-                        # Отправляем аудио
                         if audio_result:
                             if len(audio_result.raw) > 1024 * 1024:
                                 await ws.send("AUDIO_CHUNKS_BEGIN")
@@ -572,16 +509,17 @@ async def handle(ws):
 async def main_ws():
     await preload_models()
     print(f"[WS] Serving on ws://{HOST}:{PORT}")
+    print(f"[CONFIG] Performance mode: {PERFORMANCE_MODE}")
+    print(f"[CONFIG] LLM fallback: {USE_LLM_FALLBACK}")
+    print(f"[CONFIG] Confidence threshold: {CONFIDENCE_THRESHOLD}")
     
-    # Пытаемся запустить сервер с обработкой ошибки занятого порта
     try:
         async with websockets.serve(handle, HOST, PORT, max_size=8*2**20, ping_interval=300, ping_timeout=None):
             print(f"[WS] WebSocket server started successfully on {HOST}:{PORT}")
             await asyncio.Future()
     except OSError as e:
-        if e.errno == 10048:  # WSAEADDRINUSE
+        if e.errno == 10048:
             print(f"[ERROR] Port {PORT} is already in use. Trying alternative ports...")
-            # Пробуем альтернативные порты
             for alt_port in range(PORT + 1, PORT + 10):
                 try:
                     async with websockets.serve(handle, HOST, alt_port, max_size=8*2**20, ping_interval=300, ping_timeout=None):
@@ -597,22 +535,27 @@ async def main_ws():
         else:
             raise e
 
-# CLI режим
 async def cli_loop():
-    print("\n[CLI] Умный голосовой помощник — текстовый режим. Введите 'exit' для выхода.\n")
+    print("\n[CLI] Умный голосовой помощник — текстовый режим. Введите 'exit' для выхода.")
+    print(f"[CLI] Режим производительности: {PERFORMANCE_MODE}")
+    print(f"[CLI] Введите 'stats' для просмотра статистики\n")
+    
     while True:
         try:
             user_input = input("Вы: ").strip()
             if user_input.lower() in ("exit", "quit", "выход"):
                 print("[CLI] Завершение работы.")
                 break
+            if user_input.lower() == "stats":
+                stats = perf.get_stats()
+                print(f"[STATS] {stats}")
+                continue
             if not user_input:
                 continue
             
             state = AgentState(text=TextMsg(user_input))
             result = await app.ainvoke(state)
             
-            # Извлекаем текстовый ответ
             response_text = None
             for value in dict(result).values():
                 if hasattr(value, 'text') and value.text:
@@ -634,7 +577,6 @@ async def cli_loop():
 if __name__ == "__main__":
     import sys
     
-    # Проверяем аргументы командной строки
     if len(sys.argv) > 1 and sys.argv[1] == "--cli":
         print("[INFO] Запуск в CLI режиме")
         try:
