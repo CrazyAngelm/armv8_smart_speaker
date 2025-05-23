@@ -124,15 +124,17 @@ def get_system_prompt():
         "Ты — умный голосовой помощник для компании. "
         "Ты локальная модель, и пишешь ответ в мужском роде и на русском языке. "
         "Отвечай четко, коротко, по делу и профессионально. "
-        "Если не знаешь ответ, честно скажи об этом."
-        "Если твой ответ можно получить при помощи ОДНОЙ из функций ниже, "
-        "НЕ пиши ответ сам, а вызови соответствующую функцию.\n"
-        "У тебя есть следующие функции:\n"
-        "1. Узнать текущее время (get_time)\n"
-        "2. Установить таймер (set_timer)\n"
-        "3. Установить напоминание с текстом (set_notification)\n"
-        "4. Узнать погоду (get_weather)\n"
-        "5. Позвонить контакту (call_contact)\n"
+        "Если не знаешь ответ, честно скажи об этом.\n\n"
+        "ВАЖНО: Если пользователь просит выполнить одно из следующих действий, "
+        "ОБЯЗАТЕЛЬНО используй соответствующую функцию вместо собственного ответа:\n"
+        "- Узнать время → вызови get_time\n"
+        "- Поставить таймер → вызови set_timer\n"
+        "- Поставить напоминание/уведомление → вызови set_notification\n"
+        "- Узнать погоду → вызови get_weather\n"
+        "- Позвонить кому-то → вызови call_contact\n\n"
+        "Функции вернут готовый ответ для пользователя, тебе НЕ нужно "
+        "добавлять к нему свои комментарии или пояснения.\n\n"
+        "Для всех остальных вопросов отвечай самостоятельно."
     )
 
 # Инициализация менеджера LLM
@@ -243,61 +245,29 @@ async def tool_results_processor(state: AgentState) -> AgentState:
         return state
     
     try:
-        # Формируем сообщение с результатами выполнения всех инструментов
-        tool_messages = []
-        first_result = ""
+        # Оптимизация: используем результат инструмента напрямую
+        # Инструменты уже возвращают готовые для озвучивания тексты
+        
+        # Собираем все результаты инструментов
+        responses = []
         for tool_id, result in state.tool_results.items():
-            # Запоминаем первый результат, чтобы использовать его как запасной вариант
-            if not first_result:
-                first_result = str(result)
-            
-            tool_messages.append({
-                "tool_call_id": tool_id,
-                "role": "tool",
-                "content": str(result)
-            })
+            result_text = str(result).strip()
+            if result_text:
+                responses.append(result_text)
         
-        # Получаем системный промпт
-        current_system_prompt = get_system_prompt()
-        
-        # Собираем историю общения для отправки в LLM
-        messages = [
-            {"role": "system", "content": current_system_prompt},
-            {"role": "user", "content": state.text.text}
-        ]
-        
-        # Добавляем информацию о вызове инструментов
-        for tool_call in state.tool_calls:
-            tool_call_message = {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [tool_call]
-            }
-            messages.append(tool_call_message)
-        
-        # Добавляем результаты выполнения инструментов
-        messages.extend(tool_messages)
-        
-        # Отправляем в LLM для формирования окончательного ответа
-        try:
-            reply = await llm_manager.llm.ainvoke(messages)
-            
-            # Извлекаем ответ
-            if hasattr(reply, 'content'):
-                response_text = reply.content
+        # Формируем финальный ответ
+        if responses:
+            # Если несколько результатов, объединяем их
+            if len(responses) == 1:
+                response_text = responses[0]
             else:
-                response_text = str(reply)
-                
-            # Проверяем, если ответ пустой или [], используем результат инструмента напрямую
-            if not response_text or response_text == "[]":
-                print(f"[LOG] [TOOL_RESULTS] Получен пустой ответ от LLM, используем результат инструмента напрямую: {first_result}")
-                response_text = first_result
-        except Exception as e:
-            print(f"[ERROR] Ошибка при получении ответа от LLM: {e}")
-            # Используем результат инструмента напрямую
-            response_text = first_result
+                response_text = ". ".join(responses)
+            
+            print(f"[LOG] [TOOL_RESULTS] Прямой ответ от инструмента(ов): {response_text}")
+        else:
+            response_text = "Команда выполнена"
+            print(f"[LOG] [TOOL_RESULTS] Использую стандартный ответ: {response_text}")
         
-        print(f"[LOG] [TOOL_RESULTS] Окончательный ответ: {response_text}")
         state.text = TextMsg(response_text)
         
         # Очищаем информацию об инструментах, так как обработка завершена
@@ -306,7 +276,7 @@ async def tool_results_processor(state: AgentState) -> AgentState:
         
     except Exception as e:
         print(f"[ERROR] Ошибка при обработке результатов инструментов: {e}")
-        # Здесь также используем результат инструмента, если что-то пошло не так
+        # Используем результат инструмента, если что-то пошло не так
         if state.tool_results and len(state.tool_results) > 0:
             first_result = next(iter(state.tool_results.values()))
             state.text = TextMsg(str(first_result))

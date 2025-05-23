@@ -141,7 +141,19 @@ def tool_set_timer(minutes: int = 0, seconds: int = 0, hours: int = 0):
             except:
                 return response
         
-        return f"Таймер установлен на {hours} ч, {minutes} мин, {seconds} сек"
+        # Формируем естественный ответ
+        time_parts = []
+        if hours > 0:
+            time_parts.append(f"{hours} час" + ("а" if hours in [2,3,4] else "ов" if hours > 4 else ""))
+        if minutes > 0:
+            time_parts.append(f"{minutes} минут" + ("ы" if minutes in [2,3,4] else "" if minutes == 1 else ""))
+        if seconds > 0:
+            time_parts.append(f"{seconds} секунд" + ("ы" if seconds in [2,3,4] else "" if seconds == 1 else ""))
+        
+        if time_parts:
+            return f"Таймер установлен на {' '.join(time_parts)}"
+        else:
+            return "Таймер установлен"
     except Exception as e:
         print(f"[ERROR] tool_set_timer: {e}")
         return f"Ошибка при установке таймера: {str(e)}"
@@ -181,7 +193,19 @@ def tool_set_notification(text: str, minutes: int = 0, seconds: int = 0, hours: 
             except:
                 return response
         
-        return f"Напоминание установлено на {hours} ч, {minutes} мин, {seconds} сек: {text}"
+        # Формируем естественный ответ
+        time_parts = []
+        if hours > 0:
+            time_parts.append(f"{hours} час" + ("а" if hours in [2,3,4] else "ов" if hours > 4 else ""))
+        if minutes > 0:
+            time_parts.append(f"{minutes} минут" + ("ы" if minutes in [2,3,4] else "" if minutes == 1 else ""))
+        if seconds > 0:
+            time_parts.append(f"{seconds} секунд" + ("ы" if seconds in [2,3,4] else "" if seconds == 1 else ""))
+        
+        if time_parts:
+            return f"Хорошо, напомню через {' '.join(time_parts)} о том, что {text}"
+        else:
+            return f"Хорошо, напомню о том, что {text}"
     except Exception as e:
         print(f"[ERROR] tool_set_notification: {e}")
         return f"Ошибка при установке напоминания: {str(e)}"
