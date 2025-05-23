@@ -115,8 +115,17 @@ async def stt_vosk(audio: AudioMsg) -> str:
 def extract_tts_text(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    
+    # Удаляем все блоки <think>...</think> и берем только то, что после последнего </think>
+    think_pattern = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
+    if re.search(think_pattern, text):
+        # Берем только текст после последнего </think>
+        parts = re.split(r'</think>', text, flags=re.IGNORECASE)
+        if len(parts) > 1:
+            return parts[-1].strip()
+        else:
+            # Если почему-то нет закрывающего тега, просто удаляем <think>...</think>
+            return re.sub(think_pattern, '', text).strip()
+    # Старое поведение для json-ответов
     if text.startswith('[') or text.startswith('{'):
         try:
             data = json.loads(text)
